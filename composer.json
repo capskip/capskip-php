@@ -1,0 +1,57 @@
+{
+    "name": "capskip/capskip",
+    "description": "PHP SDK for the CapSkip local captcha solver",
+    "type": "library",
+    "keywords": [
+        "captcha",
+        "captcha-solver",
+        "recaptcha",
+        "cloudflare",
+        "turnstile",
+        "capskip",
+        "automation"
+    ],
+    "homepage": "https://capskip.com",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "CapSkip",
+            "email": "support@capskip.com",
+            "homepage": "https://capskip.com"
+        }
+    ],
+    "support": {
+        "issues": "https://github.com/capskip/capskip-php/issues",
+        "source": "https://github.com/capskip/capskip-php",
+        "docs": "https://github.com/capskip/capskip-php/blob/main/docs/GETTING_STARTED.md"
+    },
+    "require": {
+        "php": ">=8.0",
+        "ext-curl": "*",
+        "ext-json": "*"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^9.6 || ^10.5"
+    },
+    "autoload": {
+        "psr-4": {
+            "CapSkip\\": "src/"
+        },
+        "files": [
+            "src/aliases.php"
+        ]
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "CapSkip\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": "phpunit"
+    },
+    "config": {
+        "sort-packages": true
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}

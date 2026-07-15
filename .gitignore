@@ -1,0 +1,30 @@
+# Composer
+/vendor/
+composer.phar
+# This package is a library; its lock file is not committed (consumers resolve
+# their own dependency versions).
+/composer.lock
+
+# PHPUnit
+.phpunit.result.cache
+.phpunit.cache/
+/coverage/
+coverage.xml
+
+# Build / packaging
+/build/
+*.tgz
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local secrets / environment
+.env
+.env.*
