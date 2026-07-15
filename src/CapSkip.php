@@ -14,7 +14,7 @@ use CapSkip\Exceptions\ValidationException;
 class CapSkip
 {
     /** Installed SDK version. */
-    public const VERSION = '1.0.1';
+    public const VERSION = '1.0.2';
 
     /**
      * First poll fires this soon after submitting (in seconds), then the interval

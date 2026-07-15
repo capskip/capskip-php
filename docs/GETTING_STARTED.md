@@ -70,7 +70,7 @@ composer install
 php -r "require 'vendor/autoload.php'; echo CapSkip\CapSkip::VERSION, PHP_EOL;"
 ```
 
-Expected output: `1.0.1` (or your installed version).
+Expected output: `1.0.2` (or your installed version).
 
 ### Verify CapSkip connectivity
 
