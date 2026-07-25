@@ -137,6 +137,7 @@ php examples/recaptcha.php
 | `image_captcha.php` | Image captcha from a file |
 | `recaptcha.php` | reCAPTCHA v2 |
 | `turnstile.php` | Cloudflare Turnstile widget |
+| `geetest.php` | GeeTest v3 slider, including fetching a fresh `gt`/`challenge` pair |
 | `async_example.php` | Solving several captcha types in a row |
 | `verify_connection.php` | Check CapSkip is running |
 

@@ -30,6 +30,21 @@ final class ApiParams
         'proxy', 'proxytype',
     ];
 
+    /** @var array<int, string> */
+    public const GEETEST_SUBMIT = [
+        'method', 'gt', 'challenge', 'pageurl', 'api_server', 'json',
+        'proxy', 'proxytype',
+    ];
+
+    /**
+     * The only values CapSkip maps to a proxy scheme; it answers
+     * ERROR_BAD_PARAMETERS for anything else, SOCKS4 included. Matched
+     * case-insensitively, as the server does.
+     *
+     * @var array<int, string>
+     */
+    public const PROXY_TYPES = ['HTTP', 'HTTPS', 'SOCKS5', 'SOCKS5H'];
+
     /** @var array<string, string> */
     private const PARAM_ALIASES = [
         'url' => 'pageurl',
@@ -37,6 +52,8 @@ final class ApiParams
         'minScore' => 'min_score',
         'datas' => 'data-s',
         'data_s' => 'data-s',
+        'apiServer' => 'api_server',
+        'api_subdomain' => 'api_server',
     ];
 
     /**
@@ -162,6 +179,29 @@ final class ApiParams
     }
 
     /**
+     * @param array<string, mixed> $params
+     */
+    public static function validateGeetestSubmit(array $params): void
+    {
+        // All three are documented as required. gt is static per site, challenge is
+        // single-use and expires in about a minute; without them CapSkip answers
+        // ERROR_BAD_PARAMETERS, and without pageurl ERROR_PAGEURL. Fail locally so a
+        // missing value does not cost a round-trip.
+        foreach (['gt', 'challenge', 'pageurl'] as $key) {
+            if (empty($params[$key])) {
+                throw new ValidationException("'{$key}' is required for GeeTest v3.");
+            }
+        }
+
+        $unknown = self::unknownKeys($params, self::GEETEST_SUBMIT);
+        if (!empty($unknown)) {
+            throw new ValidationException(
+                'Unsupported parameters for GeeTest: ' . self::reprList($unknown) . '.'
+            );
+        }
+    }
+
+    /**
      * Apply aliases + proxy normalization, then validate for the captcha type.
      *
      * @param array<string, mixed> $params
@@ -179,9 +219,34 @@ final class ApiParams
             self::validateRecaptchaSubmit($params, $version);
         } elseif ($captchaType === 'turnstile') {
             self::validateTurnstileSubmit($params);
+        } elseif ($captchaType === 'geetest') {
+            self::validateGeetestSubmit($params);
+        }
+
+        // Skipped for 'normal', which rejects proxy outright with a clearer message.
+        if ($captchaType !== 'normal') {
+            self::validateProxyType($params);
         }
 
         return $params;
+    }
+
+    /**
+     * @param array<string, mixed> $params
+     */
+    public static function validateProxyType(array $params): void
+    {
+        $proxytype = $params['proxytype'] ?? null;
+        if ($proxytype === null || $proxytype === '') {
+            return;
+        }
+
+        if (!in_array(strtoupper((string) $proxytype), self::PROXY_TYPES, true)) {
+            throw new ValidationException(
+                "Unsupported proxytype '{$proxytype}'. "
+                . 'CapSkip accepts: ' . implode(', ', self::PROXY_TYPES) . '.'
+            );
+        }
     }
 
     /**
