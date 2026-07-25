@@ -12,14 +12,15 @@ Work through it top to bottom, or jump to the section you need.
 5. [reCAPTCHA v2](#5-recaptcha-v2)
 6. [reCAPTCHA v3](#6-recaptcha-v3)
 7. [Cloudflare Turnstile](#7-cloudflare-turnstile)
-8. [Using a proxy](#8-using-a-proxy)
-9. [Solving several captchas](#9-solving-several-captchas)
-10. [The manual workflow](#10-the-manual-workflow)
-11. [Return values](#11-return-values)
-12. [Error handling](#12-error-handling)
-13. [End-to-end: solve and submit](#13-end-to-end-solve-and-submit)
-14. [Parameter reference](#14-parameter-reference)
-15. [Best practices](#15-best-practices)
+8. [GeeTest v3](#8-geetest-v3)
+9. [Using a proxy](#9-using-a-proxy)
+10. [Solving several captchas](#10-solving-several-captchas)
+11. [The manual workflow](#11-the-manual-workflow)
+12. [Return values](#12-return-values)
+13. [Error handling](#13-error-handling)
+14. [End-to-end: solve and submit](#14-end-to-end-solve-and-submit)
+15. [Parameter reference](#15-parameter-reference)
+16. [Best practices](#16-best-practices)
 
 ---
 
@@ -77,7 +78,7 @@ $solver = new CapSkip([
     'host' => '127.0.0.1',        // where CapSkip is listening
     'port' => 8080,               // API port from CapSkip settings
     'defaultTimeout' => 120,      // seconds to wait for an image captcha
-    'recaptchaTimeout' => 300,    // seconds to wait for reCAPTCHA / Turnstile
+    'recaptchaTimeout' => 300,    // seconds to wait for reCAPTCHA / Turnstile / GeeTest
     'pollingInterval' => 5,       // max seconds between result polls (starts at 0.25s, backs off to this)
 ]);
 ```
@@ -146,7 +147,7 @@ $result = $solver->normal('captcha.png', ['json' => 1]);
 ```
 
 > **Note:** Proxies are **not** supported for image captcha — passing one raises
-> `ValidationException`. Proxies apply only to reCAPTCHA and Turnstile.
+> `ValidationException`. Proxies apply only to reCAPTCHA, Turnstile, and GeeTest.
 
 ---
 
@@ -229,10 +230,73 @@ $result = $solver->turnstile('0x4AAAAAAA...', 'https://example.com', [
 
 ---
 
-## 8. Using a proxy
+## 8. GeeTest v3
+
+`$solver->geetest($gt, $challenge, $url)` solves the GeeTest v3 slide puzzle.
+
+### Finding `gt` and `challenge`
+
+Unlike a sitekey, GeeTest needs **two** values, and one of them is short-lived:
+
+| Value | Lifetime | Where it comes from |
+|---|---|---|
+| `gt` | Static per site | The same place as `challenge` |
+| `challenge` | **Single-use, expires in ~1 minute** | An endpoint the site calls that returns `{"gt": "...", "challenge": "..."}` |
+
+Open DevTools → Network on the target page and look for a request to something like
+`.../register.php`, `gettype`, or `get.php`. You can also read the values out of the
+`initGeetest({ gt, challenge })` call in the page scripts.
+
+```php
+// Ask the target site for a fresh pair immediately before solving.
+$pair = json_decode(file_get_contents('https://example.com/captcha/register.php'), true);
+
+$result = $solver->geetest($pair['gt'], $pair['challenge'], 'https://example.com/login');
+```
+
+### Using the answer
+
+The result carries the three values the site's own front-end would submit:
+
+```php
+$result['challenge'];   // geetest_challenge
+$result['validate'];    // geetest_validate
+$result['seccode'];     // geetest_seccode
+
+$result['code'];        // the same answer as a raw JSON string
+```
+
+Post them back exactly as the site expects:
+
+```php
+$body = http_build_query([
+    'username' => '...',
+    'password' => '...',
+    'geetest_challenge' => $result['challenge'],
+    'geetest_validate' => $result['validate'],
+    'geetest_seccode' => $result['seccode'],
+]);
+```
+
+> **`challenge` is one-shot.** Never cache or reuse a pair. If a solve fails with a
+> bad-challenge error, request a *new* pair and retry — retrying with the same
+> `challenge` can never succeed.
+
+If the site uses a non-default GeeTest API server domain, pass it through:
+
+```php
+$solver->geetest($gt, $challenge, $url, ['api_server' => 'api-na.geetest.com']);
+```
+
+Because GeeTest is a real browser solve (load, slide, verify), it uses the longer
+`recaptchaTimeout` budget rather than `defaultTimeout`.
+
+---
+
+## 9. Using a proxy
 
 Solving through the same IP you will submit from greatly improves acceptance rates
-for reCAPTCHA and Turnstile. Pass the proxy as an array with `type` and `uri`:
+for reCAPTCHA, Turnstile, and GeeTest. Pass the proxy as an array with `type` and `uri`:
 
 ```php
 $proxy = ['type' => 'HTTPS', 'uri' => 'user:pass@1.2.3.4:3128'];
@@ -241,12 +305,14 @@ $result = $solver->recaptcha('...', 'https://example.com', ['proxy' => $proxy]);
 $result = $solver->turnstile('...', 'https://example.com', ['proxy' => $proxy]);
 ```
 
-Supported proxy types: `HTTP`, `HTTPS`, `SOCKS5`, `SOCKS5H`. The `uri` may include
+Supported proxy types: `HTTP`, `HTTPS`, `SOCKS5`, `SOCKS5H` — matched
+case-insensitively. Anything else (including `SOCKS4`) raises
+`ValidationException` before the request is sent. The `uri` may include
 credentials (`login:password@host:port`) or be a bare `host:port`.
 
 ---
 
-## 9. Solving several captchas
+## 10. Solving several captchas
 
 PHP executes synchronously, so each solve blocks until it finishes. To solve
 several captchas, call the methods one after another:
@@ -270,7 +336,7 @@ job queue).
 
 ---
 
-## 10. The manual workflow
+## 11. The manual workflow
 
 If you want to submit now and collect the answer later, use the two low-level steps
 directly.
@@ -303,7 +369,7 @@ Pass `1` as the second argument to `getResult` to get the full array (including
 
 ---
 
-## 11. Return values
+## 12. Return values
 
 Every high-level solve method (`normal`, `recaptcha`, `turnstile`, `solve`) returns
 an associative array:
@@ -321,7 +387,7 @@ solution string (or an array when `json=1`).
 
 ---
 
-## 12. Error handling
+## 13. Error handling
 
 The SDK raises four exception types, all subclasses of `CapSkip\Exceptions\CapSkipError`:
 
@@ -369,7 +435,7 @@ try {
 
 ---
 
-## 13. End-to-end: solve and submit
+## 14. End-to-end: solve and submit
 
 A realistic flow — solve a reCAPTCHA, then submit the token to the target site
 through the **same** proxy:
@@ -431,7 +497,7 @@ curl_close($ch);
 
 ---
 
-## 14. Parameter reference
+## 15. Parameter reference
 
 ### Solve methods
 
@@ -440,12 +506,13 @@ curl_close($ch);
 | Image | `normal(string $file, array $options = [])` |
 | reCAPTCHA | `recaptcha(string $sitekey, string $url, array $options = [])` |
 | Turnstile | `turnstile(string $sitekey, string $url, array $options = [])` |
+| GeeTest v3 | `geetest(string $gt, string $challenge, string $url, array $options = [])` |
 | Manual submit | `send(array $params): string` |
 | Manual poll | `getResult(string $id, int $json = 0)` |
 
 `recaptcha` options include `version` (`v2`/`v3`), `enterprise`, `invisible`,
 `action`, `score`, and `proxy`. `turnstile` options include `action`, `data`,
-`pagedata`, and `proxy`.
+`pagedata`, and `proxy`. `geetest` options include `api_server` and `proxy`.
 
 ### Convenience aliases
 
@@ -456,6 +523,7 @@ The SDK accepts friendly names and converts them to the raw API parameters:
 | `url` | `pageurl` |
 | `score`, `minScore` | `min_score` |
 | `datas`, `data_s` | `data-s` |
+| `apiServer`, `api_subdomain` | `api_server` |
 | `proxy` (array) | `proxy` + `proxytype` strings |
 
 Anything CapSkip does not document for a given captcha type is rejected with
@@ -463,14 +531,17 @@ Anything CapSkip does not document for a given captcha type is rejected with
 
 ---
 
-## 15. Best practices
+## 16. Best practices
 
 - **Keep CapSkip running.** The SDK talks to a local app; if it is not running you
   get `NetworkException`.
 - **Use the token immediately.** reCAPTCHA and Turnstile tokens expire within a
   couple of minutes.
 - **Match sitekey and pageurl exactly** to the page the widget loads on.
-- **Solve and submit from the same IP** (same proxy) for reCAPTCHA and Turnstile.
+- **Fetch a fresh GeeTest `challenge` per solve.** It is single-use and expires in
+  about a minute; a cached pair always fails.
+- **Solve and submit from the same IP** (same proxy) for reCAPTCHA, Turnstile, and
+  GeeTest.
 - **Never commit secrets.** Read `CAPSKIP_API_KEY` and proxy credentials from the
   environment, not source code.
 - **Tune timeouts** for slow captcha types with `recaptchaTimeout` and

@@ -10,11 +10,11 @@ use CapSkip\Exceptions\NetworkException;
 use CapSkip\Exceptions\TimeoutException;
 use CapSkip\Exceptions\ValidationException;
 
-/** Client for the CapSkip local captcha solver (image, reCAPTCHA, Turnstile). */
+/** Client for the CapSkip local captcha solver (image, reCAPTCHA, Turnstile, GeeTest v3). */
 class CapSkip
 {
     /** Installed SDK version. */
-    public const VERSION = '1.0.2';
+    public const VERSION = '1.1.0';
 
     /**
      * First poll fires this soon after submitting (in seconds), then the interval
@@ -121,6 +121,34 @@ class CapSkip
             $options,
             ['method' => 'turnstile', 'poll_json' => 1]
         ));
+    }
+
+    /**
+     * Solve a GeeTest v3 slider.
+     *
+     * `$gt` is static per site; `$challenge` is single-use and expires in about a
+     * minute, so fetch a fresh pair immediately before calling this. Pass
+     * `api_server` when the site uses a non-default GeeTest API server domain.
+     *
+     * The result carries the raw answer as `code` (a JSON string) plus the parsed
+     * `challenge`, `validate`, and `seccode` fields to post back to the target site.
+     *
+     * @param array<string, mixed> $options `api_server`, `proxy`, ...
+     *
+     * @return array<string, mixed>
+     */
+    public function geetest(string $gt, string $challenge, string $url, array $options = []): array
+    {
+        // Like reCAPTCHA, this is a real browser solve (load, slide, verify) and
+        // can retry internally, so it gets the longer of the two timeouts unless
+        // the caller asked for a specific one.
+        $result = $this->solve(array_merge(
+            ['timeout' => $this->recaptchaTimeout, 'gt' => $gt, 'challenge' => $challenge, 'url' => $url],
+            $options,
+            ['method' => 'geetest', 'poll_json' => 1]
+        ));
+
+        return self::applyGeetestSolution($result);
     }
 
     /**
@@ -307,6 +335,42 @@ class CapSkip
     }
 
     /**
+     * GeeTest answers come back as a JSON string in `request`, keyed with the
+     * `geetest_` prefix that the target site's own form fields use. Expand them
+     * into `challenge` / `validate` / `seccode`.
+     *
+     * `code` keeps the raw JSON string so callers that forward it verbatim (or
+     * that were written against another solver's API) keep working. If it does
+     * not parse, the result is returned untouched rather than masking the
+     * server's reply.
+     *
+     * @param array<string, mixed> $result
+     *
+     * @return array<string, mixed>
+     */
+    public static function applyGeetestSolution(array $result): array
+    {
+        $payload = json_decode((string) ($result['code'] ?? ''), true);
+        if (!is_array($payload)) {
+            return $result;
+        }
+
+        $fields = [
+            'challenge' => 'geetest_challenge',
+            'validate' => 'geetest_validate',
+            'seccode' => 'geetest_seccode',
+        ];
+        foreach ($fields as $short => $prefixed) {
+            $value = $payload[$prefixed] ?? ($payload[$short] ?? null);
+            if ($value !== null) {
+                $result[$short] = $value;
+            }
+        }
+
+        return $result;
+    }
+
+    /**
      * @param array<string, mixed>          $result
      * @param array<string, mixed>|string   $polled
      *
@@ -343,6 +407,9 @@ class CapSkip
         }
         if ($method === 'turnstile') {
             return ApiParams::prepareSubmitParams($params, 'turnstile');
+        }
+        if ($method === 'geetest') {
+            return ApiParams::prepareSubmitParams($params, 'geetest');
         }
 
         return ApiParams::applyProxy(ApiParams::applyParamAliases($params));
