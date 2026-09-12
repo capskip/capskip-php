@@ -46,6 +46,36 @@ class MockAltchaApiClient extends ApiClient
     }
 }
 
+/** Mock client whose poll returns exactly the payload it was given. */
+class RawAltchaApiClient extends ApiClient
+{
+    /** @var array<string, mixed> */
+    public array $incomings = [];
+
+    /** @var array<string, mixed> */
+    private array $payload;
+
+    /** @param array<string, mixed> $payload */
+    public function __construct(array $payload)
+    {
+        parent::__construct();
+        $this->payload = $payload;
+    }
+
+    public function in_(array $options = []): string
+    {
+        unset($options['files']);
+        $this->incomings = $options;
+
+        return 'OK|123';
+    }
+
+    public function res(array $params = []): string
+    {
+        return (string) json_encode($this->payload);
+    }
+}
+
 class AltchaTest extends TestCase
 {
     private const URL = 'https://mysite.com/signup';
@@ -62,15 +92,45 @@ class AltchaTest extends TestCase
         'maxnumber' => 1000000,
     ];
 
+    public const V2_NUMBER = 47;
+
     /**
-     * What CapSkip hands back: base64 of the solved challenge document, with the
-     * winning counter in `number`.
+     * What CapSkip hands back for a *legacy* challenge: base64 of the solved
+     * challenge document, with the winning counter in `number`.
      */
     public static function token(): string
     {
         return base64_encode((string) json_encode(
             array_merge(self::CHALLENGE_DOC, ['number' => self::NUMBER])
         ));
+    }
+
+    /**
+     * A PoW v2 answer is shaped completely differently: no top-level `number`,
+     * and the counter sits at `solution.counter`. Captured from a real
+     * PBKDF2/SHA-256 deployment (captcha.seventy9.co.uk), the scheme altcha.org
+     * documents today.
+     */
+    public static function v2Token(): string
+    {
+        return base64_encode((string) json_encode([
+            'challenge' => [
+                'parameters' => [
+                    'algorithm' => 'PBKDF2/SHA-256',
+                    'cost' => 50000,
+                    'expiresAt' => 1789224090,
+                    'keyLength' => 32,
+                    'keyPrefix' => '00',
+                    'nonce' => '634c4f591fd086beb40d67312b85808a',
+                    'salt' => '511e1c75edbf295278c9bfb68191053c',
+                ],
+                'signature' => '9197e4a35ebff399d669e747c7c5e6ab079b30fe3437df268dc7caf34cf9e281',
+            ],
+            'solution' => [
+                'counter' => self::V2_NUMBER,
+                'derivedKey' => '0099db7cb36864d8875ff8305c9a3d2649b1f72cb774de1c',
+            ],
+        ]));
     }
 
     public static function challengeJson(): string
@@ -198,14 +258,74 @@ class AltchaTest extends TestCase
         $this->assertSame(self::NUMBER, $result['number']);
     }
 
+    public function testExposesTheCounterForAProofOfWorkV2Answer(): void
+    {
+        // A v2 token carries no top-level `number` -- the counter is at
+        // `solution.counter`, and the server reports it as `solution.number` in
+        // the poll payload. Reading only the token's own `number` silently drops
+        // it for every PBKDF2 site, which is the scheme ALTCHA recommends.
+        $token = self::v2Token();
+        $this->solver->apiClient = new RawAltchaApiClient([
+            'status' => 1,
+            'request' => $token,
+            'solution' => ['token' => $token, 'number' => self::V2_NUMBER],
+        ]);
+
+        $result = $this->solve();
+
+        $this->assertSame($token, $result['token']);
+        $this->assertSame(self::V2_NUMBER, $result['number']);
+    }
+
+    public function testRecoversAV2CounterFromTheTokenWithoutASolution(): void
+    {
+        $token = self::v2Token();
+        $this->solver->apiClient = new RawAltchaApiClient([
+            'status' => 1,
+            'request' => $token,
+        ]);
+
+        $result = $this->solve();
+
+        $this->assertSame(self::V2_NUMBER, $result['number']);
+    }
+
+    public function testDoesNotLeakThePollSolutionIntoTheResult(): void
+    {
+        // Its two fields are already exposed as `token` and `number`.
+        $result = $this->solve();
+
+        $this->assertArrayNotHasKey('solution', $result);
+    }
+
     public function testUndecodableAnswerIsLeftAlone(): void
     {
-        $this->solver->apiClient = new MockAltchaApiClient('not-base64-json');
+        // No `solution` object either -- a server returning something that is not
+        // a token has no counter to report, so there is nothing to fall back on.
+        $this->solver->apiClient = new RawAltchaApiClient([
+            'status' => 1,
+            'request' => 'not-base64-json',
+        ]);
 
         $result = $this->solve();
 
         $this->assertSame('not-base64-json', $result['code']);
         $this->assertArrayNotHasKey('number', $result);
+    }
+
+    public function testTrustsTheServerCounterOverAnUnreadableToken(): void
+    {
+        // If the two ever disagree, the server worked the answer out and the
+        // decode is only an inference from it.
+        $this->solver->apiClient = new RawAltchaApiClient([
+            'status' => 1,
+            'request' => 'not-base64-json',
+            'solution' => ['token' => 'not-base64-json', 'number' => 512],
+        ]);
+
+        $result = $this->solve();
+
+        $this->assertSame(512, $result['number']);
     }
 
     public function testUsesTheDefaultTimeoutNotTheRecaptchaOne(): void

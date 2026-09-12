@@ -420,8 +420,14 @@ class CapSkip
      *
      * Expose it as `token`, and the counter as `number`. `code` keeps the raw
      * answer so callers that forward it verbatim (or that were written against
-     * another solver's API) keep working. If the payload does not decode, the
-     * result is returned untouched rather than masking the server's reply.
+     * another solver's API) keep working.
+     *
+     * The counter comes from the server's own `solution` object when the poll
+     * carried one, because that is the single field both ALTCHA generations
+     * report the same way. Only if it is absent -- a plain-text poll -- is it dug
+     * out of the token, which is shaped differently per scheme. If neither yields
+     * one, the result keeps its token and simply has no `number`, rather than
+     * masking the server's reply.
      *
      * @param array<string, mixed> $result
      *
@@ -432,21 +438,54 @@ class CapSkip
         $code = (string) ($result['code'] ?? '');
         $result['token'] = $code;
 
+        $solution = $result['solution'] ?? null;
+        unset($result['solution']);
+
+        $number = is_array($solution) ? ($solution['number'] ?? null) : null;
+        if ($number === null) {
+            $number = self::altchaTokenCounter($code);
+        }
+
+        if ($number !== null) {
+            $result['number'] = $number;
+        }
+
+        return $result;
+    }
+
+    /**
+     * Dig the winning counter out of a token, whichever scheme produced it.
+     *
+     * The two ALTCHA generations nest it differently: a legacy payload is the
+     * challenge document with a top-level `number` added, while a proof-of-work
+     * v2 payload is `{"challenge": {...}, "solution": {"counter": N, ...}}` and
+     * has no `number` at all. Returns null if the payload does not decode.
+     *
+     * @return mixed
+     */
+    private static function altchaTokenCounter(string $code)
+    {
         // strict mode: reject anything that is not genuinely base64 rather than
         // silently decoding garbage.
         $decoded = base64_decode($code, true);
         if ($decoded === false) {
-            return $result;
+            return null;
         }
 
         $payload = json_decode($decoded, true);
-        if (!is_array($payload) || !array_key_exists('number', $payload)) {
-            return $result;
+        if (!is_array($payload)) {
+            return null;
         }
 
-        $result['number'] = $payload['number'];
+        if (array_key_exists('number', $payload)) {
+            return $payload['number'];
+        }
 
-        return $result;
+        if (isset($payload['solution']) && is_array($payload['solution'])) {
+            return $payload['solution']['counter'] ?? null;
+        }
+
+        return null;
     }
 
     /**
@@ -462,6 +501,13 @@ class CapSkip
             $userAgent = $polled['useragent'] ?? ($polled['userAgent'] ?? null);
             if ($userAgent) {
                 $result['userAgent'] = $userAgent;
+            }
+            // ALTCHA's createTask-shaped `solution` object. Carried through so
+            // applyAltchaSolution can read the counter the server already worked
+            // out, which is the only reliable source for a proof-of-work v2
+            // answer; that method unsets it, so it never reaches the caller.
+            if (isset($polled['solution']) && is_array($polled['solution'])) {
+                $result['solution'] = $polled['solution'];
             }
         } else {
             $result['code'] = $polled;
