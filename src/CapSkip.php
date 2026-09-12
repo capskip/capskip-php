@@ -14,7 +14,7 @@ use CapSkip\Exceptions\ValidationException;
 class CapSkip
 {
     /** Installed SDK version. */
-    public const VERSION = '1.1.0';
+    public const VERSION = '1.2.0';
 
     /**
      * First poll fires this soon after submitting (in seconds), then the interval
@@ -149,6 +149,49 @@ class CapSkip
         ));
 
         return self::applyGeetestSolution($result);
+    }
+
+    /**
+     * Solve an ALTCHA proof-of-work challenge.
+     *
+     * Pass `challenge_url` for CapSkip to fetch the challenge itself, or
+     * `challenge_json` with the document you already have (a JSON string, or an
+     * array which is serialized for you). Sending both is allowed -- the inline
+     * document wins. A proxy applies only to the `challenge_url` fetch.
+     *
+     * Challenges expire fast -- some sites inside two minutes -- and an expired
+     * one is refused with a bare "verification failed" that looks exactly like a
+     * wrong answer. Fetch the challenge immediately before calling, and post the
+     * token promptly.
+     *
+     * The result carries the raw answer as `code`, the same string as `token`
+     * (what the site's `altcha` form field expects, verbatim), and the counter
+     * that solved it as `number`.
+     *
+     * @param array<string, mixed> $options `challenge_url`, `challenge_json`, `proxy`, ...
+     *
+     * @return array<string, mixed>
+     */
+    public function altcha(string $url, array $options = []): array
+    {
+        // An unset challenge param is dropped rather than sent as null, so
+        // passing both keys with one left out works.
+        $given = [];
+        foreach ($options as $key => $value) {
+            if ($value !== null) {
+                $given[$key] = $value;
+            }
+        }
+
+        // Unlike GeeTest and reCAPTCHA this is CPU proof-of-work measured in
+        // milliseconds, not a browser solve, so it keeps the default timeout.
+        $result = $this->solve(array_merge(
+            ['url' => $url],
+            $given,
+            ['method' => 'altcha', 'poll_json' => 1]
+        ));
+
+        return self::applyAltchaSolution($result);
     }
 
     /**
@@ -371,6 +414,81 @@ class CapSkip
     }
 
     /**
+     * ALTCHA answers come back as a base64 payload: the challenge document with
+     * the winning counter added. That payload is what the site's own `altcha`
+     * form field carries, so it is posted back verbatim.
+     *
+     * Expose it as `token`, and the counter as `number`. `code` keeps the raw
+     * answer so callers that forward it verbatim (or that were written against
+     * another solver's API) keep working.
+     *
+     * The counter comes from the server's own `solution` object when the poll
+     * carried one, because that is the single field both ALTCHA generations
+     * report the same way. Only if it is absent -- a plain-text poll -- is it dug
+     * out of the token, which is shaped differently per scheme. If neither yields
+     * one, the result keeps its token and simply has no `number`, rather than
+     * masking the server's reply.
+     *
+     * @param array<string, mixed> $result
+     *
+     * @return array<string, mixed>
+     */
+    public static function applyAltchaSolution(array $result): array
+    {
+        $code = (string) ($result['code'] ?? '');
+        $result['token'] = $code;
+
+        $solution = $result['solution'] ?? null;
+        unset($result['solution']);
+
+        $number = is_array($solution) ? ($solution['number'] ?? null) : null;
+        if ($number === null) {
+            $number = self::altchaTokenCounter($code);
+        }
+
+        if ($number !== null) {
+            $result['number'] = $number;
+        }
+
+        return $result;
+    }
+
+    /**
+     * Dig the winning counter out of a token, whichever scheme produced it.
+     *
+     * The two ALTCHA generations nest it differently: a legacy payload is the
+     * challenge document with a top-level `number` added, while a proof-of-work
+     * v2 payload is `{"challenge": {...}, "solution": {"counter": N, ...}}` and
+     * has no `number` at all. Returns null if the payload does not decode.
+     *
+     * @return mixed
+     */
+    private static function altchaTokenCounter(string $code)
+    {
+        // strict mode: reject anything that is not genuinely base64 rather than
+        // silently decoding garbage.
+        $decoded = base64_decode($code, true);
+        if ($decoded === false) {
+            return null;
+        }
+
+        $payload = json_decode($decoded, true);
+        if (!is_array($payload)) {
+            return null;
+        }
+
+        if (array_key_exists('number', $payload)) {
+            return $payload['number'];
+        }
+
+        if (isset($payload['solution']) && is_array($payload['solution'])) {
+            return $payload['solution']['counter'] ?? null;
+        }
+
+        return null;
+    }
+
+    /**
      * @param array<string, mixed>          $result
      * @param array<string, mixed>|string   $polled
      *
@@ -383,6 +501,13 @@ class CapSkip
             $userAgent = $polled['useragent'] ?? ($polled['userAgent'] ?? null);
             if ($userAgent) {
                 $result['userAgent'] = $userAgent;
+            }
+            // ALTCHA's createTask-shaped `solution` object. Carried through so
+            // applyAltchaSolution can read the counter the server already worked
+            // out, which is the only reliable source for a proof-of-work v2
+            // answer; that method unsets it, so it never reaches the caller.
+            if (isset($polled['solution']) && is_array($polled['solution'])) {
+                $result['solution'] = $polled['solution'];
             }
         } else {
             $result['code'] = $polled;
@@ -410,6 +535,9 @@ class CapSkip
         }
         if ($method === 'geetest') {
             return ApiParams::prepareSubmitParams($params, 'geetest');
+        }
+        if ($method === 'altcha') {
+            return ApiParams::prepareSubmitParams($params, 'altcha');
         }
 
         return ApiParams::applyProxy(ApiParams::applyParamAliases($params));
