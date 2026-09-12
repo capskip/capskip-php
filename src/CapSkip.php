@@ -14,7 +14,7 @@ use CapSkip\Exceptions\ValidationException;
 class CapSkip
 {
     /** Installed SDK version. */
-    public const VERSION = '1.1.0';
+    public const VERSION = '1.2.0';
 
     /**
      * First poll fires this soon after submitting (in seconds), then the interval
@@ -149,6 +149,49 @@ class CapSkip
         ));
 
         return self::applyGeetestSolution($result);
+    }
+
+    /**
+     * Solve an ALTCHA proof-of-work challenge.
+     *
+     * Pass `challenge_url` for CapSkip to fetch the challenge itself, or
+     * `challenge_json` with the document you already have (a JSON string, or an
+     * array which is serialized for you). Sending both is allowed -- the inline
+     * document wins. A proxy applies only to the `challenge_url` fetch.
+     *
+     * Challenges expire fast -- some sites inside two minutes -- and an expired
+     * one is refused with a bare "verification failed" that looks exactly like a
+     * wrong answer. Fetch the challenge immediately before calling, and post the
+     * token promptly.
+     *
+     * The result carries the raw answer as `code`, the same string as `token`
+     * (what the site's `altcha` form field expects, verbatim), and the counter
+     * that solved it as `number`.
+     *
+     * @param array<string, mixed> $options `challenge_url`, `challenge_json`, `proxy`, ...
+     *
+     * @return array<string, mixed>
+     */
+    public function altcha(string $url, array $options = []): array
+    {
+        // An unset challenge param is dropped rather than sent as null, so
+        // passing both keys with one left out works.
+        $given = [];
+        foreach ($options as $key => $value) {
+            if ($value !== null) {
+                $given[$key] = $value;
+            }
+        }
+
+        // Unlike GeeTest and reCAPTCHA this is CPU proof-of-work measured in
+        // milliseconds, not a browser solve, so it keeps the default timeout.
+        $result = $this->solve(array_merge(
+            ['url' => $url],
+            $given,
+            ['method' => 'altcha', 'poll_json' => 1]
+        ));
+
+        return self::applyAltchaSolution($result);
     }
 
     /**
@@ -371,6 +414,42 @@ class CapSkip
     }
 
     /**
+     * ALTCHA answers come back as a base64 payload: the challenge document with
+     * the winning counter added. That payload is what the site's own `altcha`
+     * form field carries, so it is posted back verbatim.
+     *
+     * Expose it as `token`, and the counter as `number`. `code` keeps the raw
+     * answer so callers that forward it verbatim (or that were written against
+     * another solver's API) keep working. If the payload does not decode, the
+     * result is returned untouched rather than masking the server's reply.
+     *
+     * @param array<string, mixed> $result
+     *
+     * @return array<string, mixed>
+     */
+    public static function applyAltchaSolution(array $result): array
+    {
+        $code = (string) ($result['code'] ?? '');
+        $result['token'] = $code;
+
+        // strict mode: reject anything that is not genuinely base64 rather than
+        // silently decoding garbage.
+        $decoded = base64_decode($code, true);
+        if ($decoded === false) {
+            return $result;
+        }
+
+        $payload = json_decode($decoded, true);
+        if (!is_array($payload) || !array_key_exists('number', $payload)) {
+            return $result;
+        }
+
+        $result['number'] = $payload['number'];
+
+        return $result;
+    }
+
+    /**
      * @param array<string, mixed>          $result
      * @param array<string, mixed>|string   $polled
      *
@@ -410,6 +489,9 @@ class CapSkip
         }
         if ($method === 'geetest') {
             return ApiParams::prepareSubmitParams($params, 'geetest');
+        }
+        if ($method === 'altcha') {
+            return ApiParams::prepareSubmitParams($params, 'altcha');
         }
 
         return ApiParams::applyProxy(ApiParams::applyParamAliases($params));

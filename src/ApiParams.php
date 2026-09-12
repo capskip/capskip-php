@@ -36,6 +36,12 @@ final class ApiParams
         'proxy', 'proxytype',
     ];
 
+    /** @var array<int, string> */
+    public const ALTCHA_SUBMIT = [
+        'method', 'pageurl', 'challenge_url', 'challenge_json', 'json',
+        'proxy', 'proxytype',
+    ];
+
     /**
      * The only values CapSkip maps to a proxy scheme; it answers
      * ERROR_BAD_PARAMETERS for anything else, SOCKS4 included. Matched
@@ -54,6 +60,10 @@ final class ApiParams
         'data_s' => 'data-s',
         'apiServer' => 'api_server',
         'api_subdomain' => 'api_server',
+        'challengeUrl' => 'challenge_url',
+        'challengeURL' => 'challenge_url',
+        'challengeJson' => 'challenge_json',
+        'challengeJSON' => 'challenge_json',
     ];
 
     /**
@@ -202,6 +212,62 @@ final class ApiParams
     }
 
     /**
+     * Drop unset challenge params and serialize an inline challenge document.
+     *
+     * `altcha($url, ['challenge_url' => ..., 'challenge_json' => ...])` is
+     * normally called with one of the two left as null, and the form body can
+     * only carry a string -- so a document passed as an array is serialized
+     * rather than triggering an array-to-string conversion. Mirrors the server,
+     * which reads a JSON-body `null` as "not sent".
+     *
+     * @param array<string, mixed> $params
+     *
+     * @return array<string, mixed>
+     */
+    public static function normalizeAltchaSubmit(array $params): array
+    {
+        $out = [];
+        foreach ($params as $key => $value) {
+            if ($value !== null) {
+                $out[$key] = $value;
+            }
+        }
+
+        if (isset($out['challenge_json']) && is_array($out['challenge_json'])) {
+            $out['challenge_json'] = (string) json_encode($out['challenge_json']);
+        }
+
+        return $out;
+    }
+
+    /**
+     * @param array<string, mixed> $params
+     */
+    public static function validateAltchaSubmit(array $params): void
+    {
+        if (empty($params['pageurl'])) {
+            throw new ValidationException("'pageurl' is required for ALTCHA.");
+        }
+
+        // CapSkip answers ERROR_BAD_PARAMETERS when neither is sent. Sending both
+        // is deliberately allowed -- the inline document simply wins, because
+        // fetching would only re-obtain what the caller already supplied.
+        if (empty($params['challenge_url']) && empty($params['challenge_json'])) {
+            throw new ValidationException(
+                "ALTCHA needs a challenge: pass 'challenge_url' for CapSkip to fetch it, "
+                . "or 'challenge_json' with the challenge document itself."
+            );
+        }
+
+        $unknown = self::unknownKeys($params, self::ALTCHA_SUBMIT);
+        if (!empty($unknown)) {
+            throw new ValidationException(
+                'Unsupported parameters for ALTCHA: ' . self::reprList($unknown) . '.'
+            );
+        }
+    }
+
+    /**
      * Apply aliases + proxy normalization, then validate for the captcha type.
      *
      * @param array<string, mixed> $params
@@ -221,6 +287,9 @@ final class ApiParams
             self::validateTurnstileSubmit($params);
         } elseif ($captchaType === 'geetest') {
             self::validateGeetestSubmit($params);
+        } elseif ($captchaType === 'altcha') {
+            $params = self::normalizeAltchaSubmit($params);
+            self::validateAltchaSubmit($params);
         }
 
         // Skipped for 'normal', which rejects proxy outright with a clearer message.

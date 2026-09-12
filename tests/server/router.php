@@ -15,6 +15,12 @@ declare(strict_types=1);
 const MOCK_CODE = 'SOLVED_TOKEN_abc123';
 const MOCK_USER_AGENT = 'CapSkipUA/1.0';
 
+// ALTCHA answers are base64 of the challenge document with the winning counter
+// added, so the mock has to return a real one for the token/number parsing to
+// mean anything.
+const MOCK_ALTCHA_NUMBER = 9661;
+const MOCK_ALTCHA_TOKEN = 'eyJhbGdvcml0aG0iOiJTSEEtMjU2IiwiY2hhbGxlbmdlIjoiM2RkMjgyNTNiZTZjYzBjNTRkOTVmN2Y5OGM1MTdlNjgiLCJudW1iZXIiOjk2NjEsInNhbHQiOiI0NmQ1YjFjODg3MWU1MTUyZDkwMmVlM2Y/ZXhwaXJlcz0xODkzNDU2MDAwIiwic2lnbmF0dXJlIjoiNGIxY2YwZTBiZTBmNGU1MjQ3ZTUwYjBmOWE0NDk4MzAiLCJ0b29rIjoxNi41OH0=';
+
 // A minimal valid 1x1 PNG. The SDK never inspects the bytes, so exact pixels do
 // not matter — the mock just needs to return something for /image.png.
 const MOCK_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
@@ -75,6 +81,18 @@ if ($method === 'GET' && $path === '/res.php') {
             $wantJson ? '{"status":0,"request":"CAPCHA_NOT_READY"}' : 'CAPCHA_NOT_READY',
             $wantJson ? 'application/json' : 'text/plain'
         );
+    } elseif (($state['idType'][$cid] ?? '') === 'altcha') {
+        // CapSkip emits a superset: the legacy status/request pair plus the
+        // createTask-shaped solution object.
+        if ($wantJson) {
+            $sendText((string) json_encode([
+                'status' => 1,
+                'request' => MOCK_ALTCHA_TOKEN,
+                'solution' => ['token' => MOCK_ALTCHA_TOKEN, 'number' => MOCK_ALTCHA_NUMBER],
+            ]), 'application/json');
+        } else {
+            $sendText('OK|' . MOCK_ALTCHA_TOKEN);
+        }
     } elseif ($wantJson && ($state['idType'][$cid] ?? '') === 'turnstile') {
         $sendText('{"status":1,"request":"' . MOCK_CODE . '","useragent":"' . MOCK_USER_AGENT . '"}', 'application/json');
     } elseif ($wantJson) {

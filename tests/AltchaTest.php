@@ -1,0 +1,277 @@
+<?php
+
+declare(strict_types=1);
+
+namespace CapSkip\Tests;
+
+use CapSkip\ApiClient;
+use CapSkip\CapSkip;
+use CapSkip\Exceptions\ValidationException;
+use PHPUnit\Framework\TestCase;
+
+/** Mock client returning a realistic ALTCHA answer (base64 token in `request`). */
+class MockAltchaApiClient extends ApiClient
+{
+    /** @var array<string, mixed> */
+    public array $incomings = [];
+
+    public string $request;
+
+    public function __construct(?string $request = null)
+    {
+        parent::__construct();
+        $this->request = $request ?? AltchaTest::token();
+    }
+
+    public function in_(array $options = []): string
+    {
+        unset($options['files']);
+        $this->incomings = $options;
+
+        return 'OK|123';
+    }
+
+    public function res(array $params = []): string
+    {
+        $json = $params['json'] ?? null;
+        if ($json === 1 || $json === '1') {
+            return (string) json_encode([
+                'status' => 1,
+                'request' => $this->request,
+                'solution' => ['token' => $this->request, 'number' => AltchaTest::NUMBER],
+            ]);
+        }
+
+        return 'OK|' . $this->request;
+    }
+}
+
+class AltchaTest extends TestCase
+{
+    private const URL = 'https://mysite.com/signup';
+    private const CHALLENGE_URL = 'https://mysite.com/captcha/api/altcha/challenge';
+
+    public const NUMBER = 9661;
+
+    /** @var array<string, mixed> */
+    public const CHALLENGE_DOC = [
+        'algorithm' => 'SHA-256',
+        'challenge' => '3dd28253be6cc0c54d95f7f98c517e68',
+        'salt' => '46d5b1c8871e5152d902ee3f?expires=1893456000',
+        'signature' => '4b1cf0e0be0f4e5247e50b0f9a449830',
+        'maxnumber' => 1000000,
+    ];
+
+    /**
+     * What CapSkip hands back: base64 of the solved challenge document, with the
+     * winning counter in `number`.
+     */
+    public static function token(): string
+    {
+        return base64_encode((string) json_encode(
+            array_merge(self::CHALLENGE_DOC, ['number' => self::NUMBER])
+        ));
+    }
+
+    public static function challengeJson(): string
+    {
+        return (string) json_encode(self::CHALLENGE_DOC);
+    }
+
+    private CapSkip $solver;
+
+    protected function setUp(): void
+    {
+        $this->solver = new CapSkip(['apiKey' => 'API_KEY', 'pollingInterval' => 1]);
+        $this->solver->apiClient = new MockAltchaApiClient();
+    }
+
+    /** @param array<string, mixed> $options @return array<string, mixed> */
+    private function solve(array $options = []): array
+    {
+        return $this->solver->altcha(
+            self::URL,
+            array_merge(['challenge_url' => self::CHALLENGE_URL], $options)
+        );
+    }
+
+    /** @param array<string, mixed> $expected */
+    private function assertSent(array $expected): void
+    {
+        /** @var MockAltchaApiClient $client */
+        $client = $this->solver->apiClient;
+        $this->assertEquals(array_merge($expected, ['key' => 'API_KEY']), $client->incomings);
+    }
+
+    public function testBasic(): void
+    {
+        $result = $this->solve();
+
+        $this->assertSent([
+            'method' => 'altcha',
+            'pageurl' => self::URL,
+            'challenge_url' => self::CHALLENGE_URL,
+        ]);
+        $this->assertSame('123', $result['captchaId']);
+    }
+
+    public function testChallengeJsonString(): void
+    {
+        $this->solve(['challenge_url' => null, 'challenge_json' => self::challengeJson()]);
+
+        $this->assertSent([
+            'method' => 'altcha',
+            'pageurl' => self::URL,
+            'challenge_json' => self::challengeJson(),
+        ]);
+    }
+
+    public function testChallengeJsonAcceptsAnArray(): void
+    {
+        // The form body can only carry a string, so a document passed as an array
+        // has to be serialized rather than triggering an array-to-string notice.
+        $this->solve(['challenge_url' => null, 'challenge_json' => self::CHALLENGE_DOC]);
+
+        /** @var MockAltchaApiClient $client */
+        $client = $this->solver->apiClient;
+        $this->assertEquals(
+            self::CHALLENGE_DOC,
+            json_decode((string) $client->incomings['challenge_json'], true)
+        );
+    }
+
+    public function testCamelCaseAliases(): void
+    {
+        $this->solve(['challenge_url' => null, 'challengeUrl' => self::CHALLENGE_URL]);
+
+        $this->assertSent([
+            'method' => 'altcha',
+            'pageurl' => self::URL,
+            'challenge_url' => self::CHALLENGE_URL,
+        ]);
+    }
+
+    public function testChallengeJsonCamelCaseAlias(): void
+    {
+        $this->solve(['challenge_url' => null, 'challengeJSON' => self::challengeJson()]);
+
+        $this->assertSent([
+            'method' => 'altcha',
+            'pageurl' => self::URL,
+            'challenge_json' => self::challengeJson(),
+        ]);
+    }
+
+    public function testBothChallengeParamsAreAllowed(): void
+    {
+        // CapSkip is deliberately more permissive than 2Captcha here: sending
+        // both is not an error, the inline document simply wins.
+        $this->solve(['challenge_json' => self::challengeJson()]);
+
+        $this->assertSent([
+            'method' => 'altcha',
+            'pageurl' => self::URL,
+            'challenge_url' => self::CHALLENGE_URL,
+            'challenge_json' => self::challengeJson(),
+        ]);
+    }
+
+    public function testProxy(): void
+    {
+        $this->solve(['proxy' => ['type' => 'HTTP', 'uri' => '1.2.3.4:3128']]);
+
+        $this->assertSent([
+            'method' => 'altcha',
+            'pageurl' => self::URL,
+            'challenge_url' => self::CHALLENGE_URL,
+            'proxy' => '1.2.3.4:3128',
+            'proxytype' => 'HTTP',
+        ]);
+    }
+
+    public function testExposesTokenAndNumber(): void
+    {
+        $result = $this->solve();
+
+        $this->assertSame(self::token(), $result['code']);
+        $this->assertSame(self::token(), $result['token']);
+        $this->assertSame(self::NUMBER, $result['number']);
+    }
+
+    public function testUndecodableAnswerIsLeftAlone(): void
+    {
+        $this->solver->apiClient = new MockAltchaApiClient('not-base64-json');
+
+        $result = $this->solve();
+
+        $this->assertSame('not-base64-json', $result['code']);
+        $this->assertArrayNotHasKey('number', $result);
+    }
+
+    public function testUsesTheDefaultTimeoutNotTheRecaptchaOne(): void
+    {
+        // ALTCHA is CPU proof-of-work measured in milliseconds, not a browser
+        // solve, so it must not inherit reCAPTCHA's much longer budget.
+        $this->assertNotSame($this->solver->defaultTimeout, $this->solver->recaptchaTimeout);
+
+        $this->solve();
+
+        /** @var MockAltchaApiClient $client */
+        $client = $this->solver->apiClient;
+        $this->assertArrayNotHasKey('timeout', $client->incomings);
+    }
+
+    public function testMissingUrlRaises(): void
+    {
+        $this->expectException(ValidationException::class);
+        $this->solver->altcha('', ['challenge_url' => self::CHALLENGE_URL]);
+    }
+
+    public function testMissingBothChallengeParamsRaises(): void
+    {
+        // CapSkip answers ERROR_BAD_PARAMETERS; fail locally instead of paying
+        // for the round-trip.
+        $this->expectException(ValidationException::class);
+        $this->solver->altcha(self::URL);
+    }
+
+    public function testEmptyChallengeParamsRaise(): void
+    {
+        $this->expectException(ValidationException::class);
+        $this->solver->altcha(self::URL, ['challenge_url' => '', 'challenge_json' => '']);
+    }
+
+    public function testUnsupportedParameterRaises(): void
+    {
+        $this->expectException(ValidationException::class);
+        $this->solve(['sitekey' => 'not-an-altcha-param']);
+    }
+
+    /** @return array<int, array<int, string>> */
+    public function proxyTypeProvider(): array
+    {
+        return [['HTTP'], ['HTTPS'], ['SOCKS5'], ['SOCKS5H'], ['socks5h']];
+    }
+
+    /** @dataProvider proxyTypeProvider */
+    public function testAcceptedProxyTypes(string $proxytype): void
+    {
+        $this->solve(['proxy' => ['type' => $proxytype, 'uri' => '1.2.3.4:3128']]);
+
+        /** @var MockAltchaApiClient $client */
+        $client = $this->solver->apiClient;
+        $this->assertSame($proxytype, $client->incomings['proxytype']);
+    }
+
+    public function testSocks4IsRejected(): void
+    {
+        $this->expectException(ValidationException::class);
+        $this->solve(['proxy' => ['type' => 'SOCKS4', 'uri' => '1.2.3.4:3128']]);
+    }
+
+    public function testUnknownProxyTypeIsRejected(): void
+    {
+        $this->expectException(ValidationException::class);
+        $this->solve(['proxy' => '1.2.3.4:3128', 'proxytype' => 'FTP']);
+    }
+}

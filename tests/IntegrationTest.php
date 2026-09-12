@@ -220,4 +220,34 @@ class IntegrationTest extends TestCase
         $this->assertSame(MockServer::CODE, $first['code']);
         $this->assertSame(MockServer::CODE, $second['code']);
     }
+    public function testAltchaWithChallengeUrl(): void
+    {
+        $solver = $this->makeSolver();
+        $result = $solver->altcha(self::URL, [
+            'challenge_url' => 'https://example.com/captcha/api/altcha/challenge',
+        ]);
+
+        $this->assertSame(MockServer::ALTCHA_TOKEN, $result['code']);
+        $this->assertSame(MockServer::ALTCHA_TOKEN, $result['token']);
+        $this->assertSame(MockServer::ALTCHA_NUMBER, $result['number']);
+        $this->assertNotEmpty($result['captchaId']);
+    }
+
+    public function testAltchaWithInlineChallengeArray(): void
+    {
+        // An array has to reach the server as JSON, not as the string "Array",
+        // or the server answers ERROR_BAD_PARAMETERS.
+        $solver = $this->makeSolver();
+        $result = $solver->altcha(self::URL, [
+            'challenge_json' => [
+                'algorithm' => 'SHA-256',
+                'challenge' => '3dd28253be6cc0c54d95f7f98c517e68',
+                'salt' => '46d5b1c8871e5152d902ee3f?expires=1893456000',
+                'signature' => '4b1cf0e0be0f4e5247e50b0f9a449830',
+                'maxnumber' => 1000000,
+            ],
+        ]);
+
+        $this->assertSame(MockServer::ALTCHA_NUMBER, $result['number']);
+    }
 }

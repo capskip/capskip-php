@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Tests](https://github.com/capskip/capskip-php/actions/workflows/ci.yml/badge.svg)](https://github.com/capskip/capskip-php/actions/workflows/ci.yml)
 
-**Solve reCAPTCHA v2, reCAPTCHA v3, Cloudflare Turnstile, GeeTest and image captchas from PHP.**
+**Solve reCAPTCHA v2, reCAPTCHA v3, Cloudflare Turnstile, GeeTest, ALTCHA and image captchas from PHP.**
 
 Official PHP client for [CapSkip](https://capskip.com), a **local captcha solver** that runs on your own machine. Licensed once, not billed per solve.
 
@@ -19,7 +19,7 @@ composer require capskip/capskip
 
 CapSkip is a desktop app. It does the solving on your machine and exposes the standard captcha-solver HTTP API — the same `in.php` / `res.php` endpoints every 2captcha-compatible client already speaks — on `127.0.0.1:8080`.
 
-This SDK is a thin wrapper over that API, with the method names you would expect: `normal()`, `recaptcha()`, `turnstile()`, `geetest()`. Nothing leaves your network, and there is no credit balance to keep an eye on.
+This SDK is a thin wrapper over that API, with the method names you would expect: `normal()`, `recaptcha()`, `turnstile()`, `geetest()`, `altcha()`. Nothing leaves your network, and there is no credit balance to keep an eye on.
 
 ## Supported captcha types
 
@@ -34,6 +34,7 @@ This SDK is a thin wrapper over that API, with the method names you would expect
 | **Cloudflare Turnstile solver** (widget) | `$solver->turnstile($sitekey, $url)` |
 | Cloudflare Turnstile (challenge page) | `$solver->turnstile($sitekey, $url, ['data' => ..., 'pagedata' => ...])` |
 | **GeeTest v3 solver** (slide puzzle) | `$solver->geetest($gt, $challenge, $url)` |
+| **ALTCHA solver** (proof-of-work) | `$solver->altcha($url, [...])` |
 
 **hCaptcha and FunCaptcha/Arkose are not supported.** hCaptcha is the one people misidentify most often, since it also puts a `data-sitekey` on the widget — check for `class="h-captcha"` or a `js.hcaptcha.com` script before reaching for `recaptcha()`.
 
@@ -131,6 +132,7 @@ $solver = new CapSkip([
     'port' => 8080,               // CapSkip port from app settings
     'defaultTimeout' => 120,      // seconds — image captcha polling timeout
     'recaptchaTimeout' => 300,    // seconds — reCAPTCHA / Turnstile / GeeTest polling timeout
+                                  // (ALTCHA uses defaultTimeout — CPU work, not a browser solve)
     'pollingInterval' => 5,       // max seconds between res.php polls (starts at 0.25s, backs off to this)
 ]);
 ```
@@ -210,7 +212,25 @@ $result = $solver->geetest(
 $result['challenge']; $result['validate']; $result['seccode'];
 ```
 
-### With a proxy (reCAPTCHA, Turnstile & GeeTest only)
+### ALTCHA
+
+ALTCHA is proof-of-work, not recognition — there is nothing to read, so a solve
+is deterministic and takes milliseconds. Give CapSkip the endpoint that serves
+the challenge, or the challenge document itself.
+
+```php
+$result = $solver->altcha('https://example.com/signup', [
+    'challenge_url' => 'https://example.com/captcha/api/altcha/challenge',
+]);
+
+// Post this back in the form field the widget uses, named `altcha`
+$result['token'];
+```
+
+Challenges expire fast — some sites inside two minutes — so fetch one
+immediately before solving and submit the token promptly.
+
+### With a proxy (reCAPTCHA, Turnstile, GeeTest & ALTCHA only)
 
 ```php
 // Proxy is not supported for image captcha
@@ -290,6 +310,9 @@ Every solve method returns an associative array:
 ]
 ```
 
+ALTCHA adds `token` (the same string as `code`, named for the form field it goes
+in) and `number`, the counter that solved it.
+
 GeeTest additionally expands its answer into `challenge`, `validate`, and
 `seccode`, while `code` keeps the raw JSON string.
 
@@ -325,7 +348,7 @@ All four extend `CapSkip\Exceptions\CapSkipError`, so you can catch them all at 
 
 ### How do I solve a captcha in PHP?
 
-Install the CapSkip desktop app, `composer require capskip/capskip`, then call the method that matches the widget — `recaptcha()`, `turnstile()`, `geetest()` or `normal()`. Each one blocks until CapSkip has an answer, then returns a token, or the recognized text in the case of an image captcha.
+Install the CapSkip desktop app, `composer require capskip/capskip`, then call the method that matches the widget — `recaptcha()`, `turnstile()`, `geetest()`, `altcha()` or `normal()`. Each one blocks until CapSkip has an answer, then returns a token, or the recognized text in the case of an image captcha.
 
 ### Is this a free captcha solver?
 
@@ -333,7 +356,7 @@ The SDK itself is MIT-licensed and free. Solving needs the CapSkip app, which is
 
 ### Which captchas can it solve?
 
-reCAPTCHA v2 (checkbox and invisible), reCAPTCHA v3, reCAPTCHA Enterprise, Cloudflare Turnstile, GeeTest v3, and image/text captchas. Not hCaptcha, and not FunCaptcha/Arkose.
+reCAPTCHA v2 (checkbox and invisible), reCAPTCHA v3, reCAPTCHA Enterprise, Cloudflare Turnstile, GeeTest v3, ALTCHA, and image/text captchas. Not hCaptcha, and not FunCaptcha/Arkose.
 
 ### Does it work with Laravel, Guzzle or Symfony?
 
