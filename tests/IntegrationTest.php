@@ -9,6 +9,7 @@ use CapSkip\CapSkip;
 use CapSkip\Exceptions\ApiException;
 use CapSkip\Exceptions\NetworkException;
 use CapSkip\Exceptions\TimeoutException;
+use CapSkip\Exceptions\ValidationException;
 use PHPUnit\Framework\TestCase;
 
 /** End-to-end tests driving the real HTTP layer against a local mock server. */
@@ -249,5 +250,106 @@ class IntegrationTest extends TestCase
         ]);
 
         $this->assertSame(MockServer::ALTCHA_NUMBER, $result['number']);
+    }
+
+    // -- Capy -------------------------------------------------------------
+
+    public function testCapy(): void
+    {
+        $solver = $this->makeSolver();
+        $result = $solver->capy('PUZZLE_Abc1dEFghIJKLM2no34P56q7rStu8v', self::URL);
+
+        $expected = json_decode(MockServer::CAPY_SOLUTION_JSON, true);
+        $this->assertSame($expected['captchakey'], $result['captchakey']);
+        $this->assertSame($expected['challengekey'], $result['challengekey']);
+        $this->assertSame($expected['answer'], $result['answer']);
+        $this->assertNotEmpty($result['captchaId']);
+    }
+
+    public function testCapyAnswerCrossesTheWireUnchanged(): void
+    {
+        // The answer is the drag path the widget would have recorded; the target
+        // site verifies it against the challenge it issued, so any edit breaks it.
+        $solver = $this->makeSolver();
+        $result = $solver->capy('PUZZLE_Abc1dEFghIJKLM2no34P56q7rStu8v', self::URL, [
+            'api_server' => 'https://jp.api.capy.me/',
+        ]);
+
+        $expected = json_decode(MockServer::CAPY_SOLUTION_JSON, true);
+        $this->assertSame($expected['answer'], $result['answer']);
+    }
+
+    public function testCapyAvatarIsRefusedLocally(): void
+    {
+        $this->expectException(ValidationException::class);
+
+        $solver = $this->makeSolver();
+        $solver->capy('PUZZLE_x', self::URL, ['version' => 'avatar']);
+    }
+
+    // -- CaptchaFox --------------------------------------------------------
+
+    public function testCaptchaFox(): void
+    {
+        $solver = $this->makeSolver();
+        $result = $solver->captchafox('sk_xtNxpk6fCdFbxh1_xJeGflSdCE9tn99G', self::URL);
+
+        $this->assertSame(MockServer::CAPTCHAFOX_TOKEN, $result['code']);
+        $this->assertSame(MockServer::CAPTCHAFOX_TOKEN, $result['token']);
+        $this->assertNotEmpty($result['captchaId']);
+    }
+
+    public function testCaptchaFoxReportsTheBrowserUserAgent(): void
+    {
+        // Not the one sent: CapSkip solves in its own browser, and the token has
+        // to be submitted under the UA that minted it.
+        $callerUa = 'Mozilla/5.0 (the caller own UA)';
+        $solver = $this->makeSolver();
+        $result = $solver->captchafox('sk_x', self::URL, ['useragent' => $callerUa]);
+
+        $this->assertSame(MockServer::CAPTCHAFOX_USER_AGENT, $result['userAgent']);
+        $this->assertNotSame($callerUa, $result['userAgent']);
+    }
+
+    public function testCaptchaFoxWithoutASitekeyIsRefusedLocally(): void
+    {
+        $this->expectException(ValidationException::class);
+
+        $solver = $this->makeSolver();
+        $solver->captchafox('', self::URL);
+    }
+
+    // -- Friendly Captcha ---------------------------------------------------
+
+    public function testFriendlyCaptcha(): void
+    {
+        $solver = $this->makeSolver();
+        $result = $solver->friendlyCaptcha('FCMGEMUD2M567T8G', self::URL, ['version' => 'v1']);
+
+        $this->assertSame(MockServer::FRIENDLY_CAPTCHA_TOKEN, $result['code']);
+        $this->assertSame(MockServer::FRIENDLY_CAPTCHA_TOKEN, $result['token']);
+        $this->assertNotEmpty($result['captchaId']);
+    }
+
+    public function testFriendlyCaptchaTokenSurvivesTheWireVerbatim(): void
+    {
+        // The token carries base64 padding and slashes; form encoding must
+        // round-trip them, or the target site rejects a token that looks fine.
+        $solver = $this->makeSolver();
+        $result = $solver->friendlyCaptcha('FCMGEMUD2M567T8G', self::URL, [
+            'module_script' => 'https://cdn.example.com/site.min.js',
+        ]);
+
+        $this->assertSame(MockServer::FRIENDLY_CAPTCHA_TOKEN, $result['token']);
+        $this->assertStringContainsString('/', $result['token']);
+        $this->assertStringContainsString('=', $result['token']);
+    }
+
+    public function testFriendlyCaptchaBadVersionIsRefusedLocally(): void
+    {
+        $this->expectException(ValidationException::class);
+
+        $solver = $this->makeSolver();
+        $solver->friendlyCaptcha('FCMGEMUD2M567T8G', self::URL, ['version' => 'v3']);
     }
 }

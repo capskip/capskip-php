@@ -195,6 +195,143 @@ class CapSkip
     }
 
     /**
+     * Solve a Capy Puzzle captcha.
+     *
+     * `$sitekey` is the site's public Capy key, conventionally prefixed
+     * `PUZZLE_`; it is sent as the `captchakey` the API documents. Pass
+     * `api_server` when the widget script points somewhere other than
+     * `https://jp.api.capy.me`.
+     *
+     * The result is not a token. It carries `captchakey`, `challengekey` and
+     * `answer`, which go into the target form's `capy_captchakey`,
+     * `capy_challengekey` and `capy_answer` fields, plus the raw answer as
+     * `code`. Submit `answer` verbatim -- it is the drag path the widget would
+     * have recorded, so trimming or re-encoding it invalidates the solve.
+     *
+     * The challenge key is single-use and short-lived, so submit promptly rather
+     * than caching the three values for a later request.
+     *
+     * @param array<string, mixed> $options `api_server`, `version`, `proxy`, ...
+     *
+     * @return array<string, mixed>
+     */
+    public function capy(string $sitekey, string $url, array $options = []): array
+    {
+        // An unset optional is dropped rather than sent as null, so passing a
+        // key with no value behaves as if it were omitted.
+        $given = [];
+        foreach ($options as $key => $value) {
+            if ($value !== null) {
+                $given[$key] = $value;
+            }
+        }
+
+        // A Capy solve is one HTTP fetch plus pixel math, not a browser session,
+        // so it keeps the default timeout. It is held back to roughly two seconds
+        // before the answer is released -- Capy refuses answers that arrive
+        // faster than a human could have produced them -- which the default
+        // absorbs.
+        $result = $this->solve(array_merge(
+            ['captchakey' => $sitekey, 'url' => $url],
+            $given,
+            ['method' => 'capy', 'poll_json' => 1]
+        ));
+
+        return self::applyCapySolution($result);
+    }
+
+    /**
+     * Solve a CaptchaFox challenge.
+     *
+     * `$sitekey` is the public key the widget renders with, conventionally
+     * prefixed `sk_`, and `$url` has to be the page the widget actually runs on:
+     * CaptchaFox checks it against the domains the key is registered for and
+     * refuses a mismatch permanently rather than intermittently.
+     *
+     * Pass `api_server` only when the target page does not load the default
+     * widget. A page loading the MAM package expects a `MAM_` prefixed token, and
+     * sending the wrong source still succeeds -- it just returns a token in a
+     * format the site will not accept, which reads as a silent verification
+     * failure rather than an error.
+     *
+     * The result carries the token as both `code` and `token`, for the form's
+     * `cf-captcha-response` field, and `userAgent` when the solve reported one.
+     * That User-Agent is the browser's own, not any you sent, so submit the token
+     * under it.
+     *
+     * @param array<string, mixed> $options `api_server`, `useragent`, `proxy`, ...
+     *
+     * @return array<string, mixed>
+     */
+    public function captchafox(string $sitekey, string $url, array $options = []): array
+    {
+        $given = [];
+        foreach ($options as $key => $value) {
+            if ($value !== null) {
+                $given[$key] = $value;
+            }
+        }
+
+        // A real browser session, like reCAPTCHA and GeeTest, and longer again
+        // when an interactive challenge is drawn -- so it gets the longer of the
+        // two timeouts unless the caller asked for a specific one.
+        $result = $this->solve(array_merge(
+            ['timeout' => $this->recaptchaTimeout, 'sitekey' => $sitekey, 'url' => $url],
+            $given,
+            ['method' => 'captchafox', 'poll_json' => 1]
+        ));
+
+        return self::applyTokenSolution($result);
+    }
+
+    /**
+     * Solve a Friendly Captcha proof-of-work challenge.
+     *
+     * Two different protocols ship under this name and a sitekey does not tell
+     * you which one a site uses, so say which: pass `version` as `v1` or `v2`, or
+     * pass `module_script` with the src of the widget's `type="module"` script
+     * tag and let CapSkip read the version off the build the site actually loads.
+     * With neither, v1 is assumed. Solving the wrong version returns a
+     * well-formed token the target site rejects, with nothing to indicate the
+     * version was the problem.
+     *
+     * Pass `api_server` as `eu` for a sitekey on the EU data-residency tenant;
+     * both tenants mint a token for the same sitekey, so the wrong one is only
+     * caught by the site's own verification.
+     *
+     * The result carries the token as both `code` and `token`. It goes into
+     * `frc-captcha-solution` on v1 and `frc-captcha-response` on v2 -- the field
+     * names differ, which is what catches an integration moved from one to the
+     * other. A v2 token is roughly six kilobytes, so size whatever carries it
+     * accordingly.
+     *
+     * @param array<string, mixed> $options `version`, `module_script`, `api_server`, ...
+     *
+     * @return array<string, mixed>
+     */
+    public function friendlyCaptcha(string $sitekey, string $url, array $options = []): array
+    {
+        $given = [];
+        foreach ($options as $key => $value) {
+            if ($value !== null) {
+                $given[$key] = $value;
+            }
+        }
+
+        // Proof-of-work, but not the millisecond kind ALTCHA does: the service
+        // sets the difficulty per request and raises it for addresses it has seen
+        // a lot of, and v2 always solves in a browser. Both make solve time
+        // variable enough to want the longer timeout.
+        $result = $this->solve(array_merge(
+            ['timeout' => $this->recaptchaTimeout, 'sitekey' => $sitekey, 'url' => $url],
+            $given,
+            ['method' => 'friendly_captcha', 'poll_json' => 1]
+        ));
+
+        return self::applyTokenSolution($result);
+    }
+
+    /**
      * Submit then poll to completion. Used by the higher-level solve methods.
      *
      * @param array<string, mixed> $options Submit params plus optional `timeout`,
@@ -454,6 +591,81 @@ class CapSkip
     }
 
     /**
+     * A Capy solution is not a token. It is three values that together go into
+     * the target form, under the `capy_` prefixed names the widget would have
+     * filled in -- expand them into `captchakey` / `challengekey` / `answer`.
+     *
+     * `code` keeps the raw answer -- an array when polled with json=1, where the
+     * server puts the object straight into `request`, or the JSON string it sends
+     * after `OK|` in plain-text mode -- so callers that forward it verbatim (or
+     * that were written against another solver's API) keep working.
+     *
+     * If the answer does not parse, the result is returned untouched rather than
+     * masking the server's reply.
+     *
+     * @param array<string, mixed> $result
+     *
+     * @return array<string, mixed>
+     */
+    public static function applyCapySolution(array $result): array
+    {
+        $payload = $result['solution'] ?? null;
+        unset($result['solution']);
+
+        if (!is_array($payload)) {
+            $code = $result['code'] ?? null;
+            if (is_array($code)) {
+                $payload = $code;
+            } else {
+                $payload = json_decode((string) $code, true);
+            }
+        }
+
+        if (!is_array($payload)) {
+            return $result;
+        }
+
+        foreach (['captchakey', 'challengekey', 'answer', 'respKey'] as $field) {
+            if (array_key_exists($field, $payload)) {
+                $result[$field] = $payload[$field];
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * Expose a single-token answer as `token`, named for the form field it fills.
+     *
+     * `code` keeps the raw answer so callers that forward it verbatim keep
+     * working; `token` is the same string. The server's createTask-shaped
+     * `solution` object carries that same string, so it is consumed here rather
+     * than handed back as a second copy -- but it is read first when `request`
+     * came through empty, so a client is never left without the token the poll
+     * actually carried.
+     *
+     * @param array<string, mixed> $result
+     *
+     * @return array<string, mixed>
+     */
+    public static function applyTokenSolution(array $result): array
+    {
+        $solution = $result['solution'] ?? null;
+        unset($result['solution']);
+
+        $code = (string) ($result['code'] ?? '');
+
+        if ($code === '' && is_array($solution)) {
+            $code = (string) ($solution['token'] ?? '');
+            $result['code'] = $code;
+        }
+
+        $result['token'] = $code;
+
+        return $result;
+    }
+
+    /**
      * Dig the winning counter out of a token, whichever scheme produced it.
      *
      * The two ALTCHA generations nest it differently: a legacy payload is the
@@ -538,6 +750,15 @@ class CapSkip
         }
         if ($method === 'altcha') {
             return ApiParams::prepareSubmitParams($params, 'altcha');
+        }
+        if ($method === 'capy') {
+            return ApiParams::prepareSubmitParams($params, 'capy');
+        }
+        if ($method === 'captchafox') {
+            return ApiParams::prepareSubmitParams($params, 'captchafox');
+        }
+        if ($method === 'friendly_captcha') {
+            return ApiParams::prepareSubmitParams($params, 'friendly_captcha');
         }
 
         return ApiParams::applyProxy(ApiParams::applyParamAliases($params));

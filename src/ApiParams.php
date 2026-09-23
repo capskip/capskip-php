@@ -42,6 +42,41 @@ final class ApiParams
         'proxy', 'proxytype',
     ];
 
+    /** @var array<int, string> */
+    public const CAPY_SUBMIT = [
+        'method', 'captchakey', 'pageurl', 'api_server', 'version', 'useragent', 'json',
+        'proxy', 'proxytype',
+    ];
+
+    /** @var array<int, string> */
+    public const CAPTCHAFOX_SUBMIT = [
+        'method', 'sitekey', 'pageurl', 'api_server', 'useragent', 'json',
+        'proxy', 'proxytype',
+    ];
+
+    /** @var array<int, string> */
+    public const FRIENDLY_CAPTCHA_SUBMIT = [
+        'method', 'sitekey', 'pageurl', 'version', 'module_script', 'nomodule_script',
+        'api_server', 'useragent', 'json', 'proxy', 'proxytype',
+    ];
+
+    /**
+     * CapSkip solves the puzzle family only. `avatar` is a different challenge
+     * behind a different endpoint; the server refuses it at submit time rather
+     * than answering it with a puzzle answer, which would bill for a solve the
+     * target site rejects.
+     *
+     * @var array<int, string>
+     */
+    public const CAPY_VERSIONS = ['puzzle'];
+
+    /**
+     * Both spellings the server accepts, and the bare digits it also takes.
+     *
+     * @var array<int, string>
+     */
+    public const FRIENDLY_CAPTCHA_VERSIONS = ['v1', 'v2', '1', '2'];
+
     /**
      * The only values CapSkip maps to a proxy scheme; it answers
      * ERROR_BAD_PARAMETERS for anything else, SOCKS4 included. Matched
@@ -64,6 +99,16 @@ final class ApiParams
         'challengeURL' => 'challenge_url',
         'challengeJson' => 'challenge_json',
         'challengeJSON' => 'challenge_json',
+        // The server reads userAgent and useragent interchangeably on every
+        // method that takes one, so the SDK settles on the lowercase spelling
+        // its parameter tables document and accepts the camelCase one callers
+        // arrive with.
+        'userAgent' => 'useragent',
+        'user_agent' => 'useragent',
+        'captchaKey' => 'captchakey',
+        'moduleScript' => 'module_script',
+        'nomoduleScript' => 'nomodule_script',
+        'noModuleScript' => 'nomodule_script',
     ];
 
     /**
@@ -268,6 +313,113 @@ final class ApiParams
     }
 
     /**
+     * Drop parameters left as null so an omitted optional is not sent as "".
+     *
+     * The form body can only carry strings, so a default of null would
+     * otherwise reach the server stringified. Mirrors the server, which reads a
+     * JSON-body `null` as "not sent".
+     *
+     * @param array<string, mixed> $params
+     *
+     * @return array<string, mixed>
+     */
+    public static function dropUnset(array $params): array
+    {
+        $out = [];
+        foreach ($params as $key => $value) {
+            if ($value !== null) {
+                $out[$key] = $value;
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * @param array<string, mixed> $params
+     */
+    public static function validateCapySubmit(array $params): void
+    {
+        // Both are documented as required; without captchakey the server answers
+        // ERROR_BAD_PARAMETERS and without pageurl ERROR_PAGEURL. Fail locally so
+        // a missing value does not cost a round-trip.
+        foreach (['captchakey', 'pageurl'] as $key) {
+            if (empty($params[$key])) {
+                throw new ValidationException("'{$key}' is required for Capy.");
+            }
+        }
+
+        $version = $params['version'] ?? null;
+        if ($version !== null && $version !== ''
+            && !in_array(strtolower((string) $version), self::CAPY_VERSIONS, true)
+        ) {
+            throw new ValidationException(
+                "Unsupported Capy version '{$version}'. CapSkip solves the puzzle family "
+                . "only -- 'avatar' is a different challenge behind a different endpoint, "
+                . 'and the server refuses it rather than returning a puzzle answer the '
+                . 'target site would reject.'
+            );
+        }
+
+        $unknown = self::unknownKeys($params, self::CAPY_SUBMIT);
+        if (!empty($unknown)) {
+            throw new ValidationException(
+                'Unsupported parameters for Capy: ' . self::reprList($unknown) . '.'
+            );
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $params
+     */
+    public static function validateCaptchaFoxSubmit(array $params): void
+    {
+        foreach (['sitekey', 'pageurl'] as $key) {
+            if (empty($params[$key])) {
+                throw new ValidationException("'{$key}' is required for CaptchaFox.");
+            }
+        }
+
+        $unknown = self::unknownKeys($params, self::CAPTCHAFOX_SUBMIT);
+        if (!empty($unknown)) {
+            throw new ValidationException(
+                'Unsupported parameters for CaptchaFox: ' . self::reprList($unknown) . '.'
+            );
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $params
+     */
+    public static function validateFriendlyCaptchaSubmit(array $params): void
+    {
+        foreach (['sitekey', 'pageurl'] as $key) {
+            if (empty($params[$key])) {
+                throw new ValidationException("'{$key}' is required for Friendly Captcha.");
+            }
+        }
+
+        $version = $params['version'] ?? null;
+        if ($version !== null && $version !== ''
+            && !in_array(strtolower((string) $version), self::FRIENDLY_CAPTCHA_VERSIONS, true)
+        ) {
+            throw new ValidationException(
+                "Unsupported Friendly Captcha version '{$version}'. Use 'v1' or 'v2' "
+                . '(a bare 1 or 2 is accepted too). The two are different protocols '
+                . 'sharing one sitekey namespace, so solving the wrong one returns a '
+                . 'well-formed token the target site rejects.'
+            );
+        }
+
+        $unknown = self::unknownKeys($params, self::FRIENDLY_CAPTCHA_SUBMIT);
+        if (!empty($unknown)) {
+            throw new ValidationException(
+                'Unsupported parameters for Friendly Captcha: ' . self::reprList($unknown) . '.'
+            );
+        }
+    }
+
+    /**
      * Apply aliases + proxy normalization, then validate for the captcha type.
      *
      * @param array<string, mixed> $params
@@ -290,6 +442,15 @@ final class ApiParams
         } elseif ($captchaType === 'altcha') {
             $params = self::normalizeAltchaSubmit($params);
             self::validateAltchaSubmit($params);
+        } elseif ($captchaType === 'capy') {
+            $params = self::dropUnset($params);
+            self::validateCapySubmit($params);
+        } elseif ($captchaType === 'captchafox') {
+            $params = self::dropUnset($params);
+            self::validateCaptchaFoxSubmit($params);
+        } elseif ($captchaType === 'friendly_captcha') {
+            $params = self::dropUnset($params);
+            self::validateFriendlyCaptchaSubmit($params);
         }
 
         // Skipped for 'normal', which rejects proxy outright with a clearer message.

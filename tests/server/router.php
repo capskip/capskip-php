@@ -21,6 +21,21 @@ const MOCK_USER_AGENT = 'CapSkipUA/1.0';
 const MOCK_ALTCHA_NUMBER = 9661;
 const MOCK_ALTCHA_TOKEN = 'eyJhbGdvcml0aG0iOiJTSEEtMjU2IiwiY2hhbGxlbmdlIjoiM2RkMjgyNTNiZTZjYzBjNTRkOTVmN2Y5OGM1MTdlNjgiLCJudW1iZXIiOjk2NjEsInNhbHQiOiI0NmQ1YjFjODg3MWU1MTUyZDkwMmVlM2Y/ZXhwaXJlcz0xODkzNDU2MDAwIiwic2lnbmF0dXJlIjoiNGIxY2YwZTBiZTBmNGU1MjQ3ZTUwYjBmOWE0NDk4MzAiLCJ0b29rIjoxNi41OH0=';
 
+// Capy answers are not a token: three values that together go into the target
+// form. `answer` is the drag path the widget would have recorded, so the mock
+// carries a realistic one -- the expansion is only meaningful against a real
+// shape.
+const MOCK_CAPY_SOLUTION_JSON = '{"captchakey":"PUZZLE_Abc1dEFghIJKLM2no34P56q7rStu8v","challengekey":"BalY2gJaI8uA2SGVOZhqBQ3V0CYSNNGP","answer":"0xax8ex0xax84x0xkx7qx0x18x76x0x1ix6sx0x26x68x0x2gx5kx0x34x50x","respKey":""}';
+
+const MOCK_CAPTCHAFOX_TOKEN = '177f50c25b845601e5c779cdb51b040d523e8ab69efb4d5b343e28df07d05076';
+// The UA the browser actually minted the token under -- deliberately not one a
+// caller could have sent, so a test can tell the two apart.
+const MOCK_CAPTCHAFOX_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36';
+
+// A v1 token: four dot-separated parts. A v2 one is a single opaque string of
+// roughly six kilobytes, which shape-wise changes nothing the SDK does with it.
+const MOCK_FRIENDLY_CAPTCHA_TOKEN = 'c62c4da36bbaf7f253873035832709ef.aqwpWwdbzRWKY/UQAQwwpgAAAAAAAAAAM7hBvJOzqjc=.AAAAAArcCQABAAAAxv8QAAIAAACKYRgA.AgAB';
+
 // A minimal valid 1x1 PNG. The SDK never inspects the bytes, so exact pixels do
 // not matter — the mock just needs to return something for /image.png.
 const MOCK_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
@@ -92,6 +107,46 @@ if ($method === 'GET' && $path === '/res.php') {
             ]), 'application/json');
         } else {
             $sendText('OK|' . MOCK_ALTCHA_TOKEN);
+        }
+    } elseif (($state['idType'][$cid] ?? '') === 'capy') {
+        // The one method whose answer is an object rather than a string: json=1
+        // puts it straight into `request`, and plain text sends it as a single
+        // line of JSON after OK|.
+        $capy = json_decode(MOCK_CAPY_SOLUTION_JSON, true);
+        if ($wantJson) {
+            $sendText((string) json_encode([
+                'status' => 1,
+                'request' => $capy,
+                'solution' => $capy,
+            ]), 'application/json');
+        } else {
+            $sendText('OK|' . MOCK_CAPY_SOLUTION_JSON);
+        }
+    } elseif (($state['idType'][$cid] ?? '') === 'captchafox') {
+        // The UA is the browser's own, and CapSkip reports it at the top level
+        // and inside solution both.
+        if ($wantJson) {
+            $sendText((string) json_encode([
+                'status' => 1,
+                'request' => MOCK_CAPTCHAFOX_TOKEN,
+                'userAgent' => MOCK_CAPTCHAFOX_USER_AGENT,
+                'solution' => [
+                    'token' => MOCK_CAPTCHAFOX_TOKEN,
+                    'userAgent' => MOCK_CAPTCHAFOX_USER_AGENT,
+                ],
+            ]), 'application/json');
+        } else {
+            $sendText('OK|' . MOCK_CAPTCHAFOX_TOKEN);
+        }
+    } elseif (($state['idType'][$cid] ?? '') === 'friendly_captcha') {
+        if ($wantJson) {
+            $sendText((string) json_encode([
+                'status' => 1,
+                'request' => MOCK_FRIENDLY_CAPTCHA_TOKEN,
+                'solution' => ['token' => MOCK_FRIENDLY_CAPTCHA_TOKEN],
+            ]), 'application/json');
+        } else {
+            $sendText('OK|' . MOCK_FRIENDLY_CAPTCHA_TOKEN);
         }
     } elseif ($wantJson && ($state['idType'][$cid] ?? '') === 'turnstile') {
         $sendText('{"status":1,"request":"' . MOCK_CODE . '","useragent":"' . MOCK_USER_AGENT . '"}', 'application/json');
