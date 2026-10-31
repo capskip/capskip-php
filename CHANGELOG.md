@@ -5,6 +5,43 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-11-01
+
+### Added
+
+- **AWS WAF support** via `amazonWaf(string $sitekey, string $url, array $options = [])`
+  on both `CapSkip` and `AsyncCapSkip`, sent as `method=amazon_waf`. On a
+  challenge page `$sitekey` is `gokuProps.key`, with optional `iv` and `context`
+  (`gokuProps.iv` / `.context`, both or neither) and the `challenge_script` /
+  `captcha_script` URLs; on a widget page `$sitekey` is the widget's `apiKey` and
+  `jsapiScript` the URL of `jsapi.js`.
+  The answer is **not a token**: the result expands into `captcha_voucher` and
+  `existing_token`, the pair the site's `voucher` endpoint (beside
+  `challenge.js`) trades for the `aws-waf-token` cookie. `code` keeps the raw
+  answer.
+- Parameter aliases `challengeScript` for `challenge_script`, `captchaScript` for
+  `captcha_script`, and `jsapi_script` for `jsapiScript`.
+
+### Changed
+
+- The Capy answer expansion now goes through a shared helper that AWS WAF uses
+  too. Capy results are unchanged.
+- `CapSkip::VERSION` now reports `1.4.0`; it had been left at `1.2.0` in the
+  1.3.0 release.
+
+### Notes
+
+- Refused locally, before a round-trip: a missing `sitekey` or `pageurl`, a
+  `pageurl` that is not an absolute http/https URL, `iv` without `context` (or
+  the reverse), and any script URL that is not https on an `awswaf.com` host
+  ending in `challenge.js`, `captcha.js` or `jsapi.js`. CapSkip POSTs the solution
+  to the host the script names, so it refuses anything that is not an AWS WAF
+  integration.
+- An optional passed as `''` is dropped like `null`, since the server treats an
+  empty value as absent.
+- AWS WAF uses `recaptchaTimeout`: a real browser mints the token the voucher is
+  issued for.
+
 ## [1.3.0] - 2026-09-22
 
 ### Added

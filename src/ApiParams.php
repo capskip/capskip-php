@@ -60,6 +60,26 @@ final class ApiParams
         'api_server', 'useragent', 'json', 'proxy', 'proxytype',
     ];
 
+    /** @var array<int, string> */
+    public const AMAZON_WAF_SUBMIT = [
+        'method', 'sitekey', 'pageurl', 'iv', 'context', 'challenge_script',
+        'captcha_script', 'jsapiScript', 'json', 'proxy', 'proxytype',
+    ];
+
+    /**
+     * The script parameters of an AWS WAF task. CapSkip POSTs the solution to
+     * the host these name, so it refuses any that is not a genuine AWS WAF one.
+     *
+     * @var array<int, string>
+     */
+    public const AMAZON_WAF_SCRIPTS = ['challenge_script', 'captcha_script', 'jsapiScript'];
+
+    /**
+     * The server's own test: one or more [A-Za-z0-9_-] path segments, then one
+     * of the three AWS WAF script files.
+     */
+    private const AMAZON_WAF_SCRIPT_PATH = '~^(/[A-Za-z0-9_-]+)+/(challenge|captcha|jsapi)\.js$~';
+
     /**
      * CapSkip solves the puzzle family only. `avatar` is a different challenge
      * behind a different endpoint; the server refuses it at submit time rather
@@ -109,6 +129,12 @@ final class ApiParams
         'moduleScript' => 'module_script',
         'nomoduleScript' => 'nomodule_script',
         'noModuleScript' => 'nomodule_script',
+        // AWS WAF: the API documents challenge_script / captcha_script in snake
+        // case and jsapiScript in camel case, as 2Captcha does. Accept the other
+        // spelling of each, which is what createTask-style callers arrive with.
+        'challengeScript' => 'challenge_script',
+        'captchaScript' => 'captcha_script',
+        'jsapi_script' => 'jsapiScript',
     ];
 
     /**
@@ -420,6 +446,89 @@ final class ApiParams
     }
 
     /**
+     * True for a script URL CapSkip will accept on an AWS WAF task.
+     *
+     * Mirrors the server: https, a host under .awswaf.com, no credentials or
+     * explicit port other than 443, and a path ending in challenge.js,
+     * captcha.js or jsapi.js. The server only applies the check once the task is
+     * queued, so failing here saves a submit that could never solve.
+     *
+     * @param mixed $url
+     */
+    public static function isAmazonWafScriptUrl($url): bool
+    {
+        if (!is_string($url)) {
+            return false;
+        }
+        $parts = parse_url(trim($url));
+        if (!is_array($parts)) {
+            return false;
+        }
+
+        $host = strtolower((string) ($parts['host'] ?? ''));
+        $port = $parts['port'] ?? null;
+
+        return strtolower((string) ($parts['scheme'] ?? '')) === 'https'
+            && str_ends_with($host, '.awswaf.com')
+            && !isset($parts['user'])
+            && !isset($parts['pass'])
+            && ($port === null || $port === 443)
+            && preg_match(self::AMAZON_WAF_SCRIPT_PATH, (string) ($parts['path'] ?? '')) === 1;
+    }
+
+    /**
+     * @param array<string, mixed> $params
+     */
+    public static function validateAmazonWafSubmit(array $params): void
+    {
+        // Without sitekey the server answers ERROR_BAD_PARAMETERS and without
+        // pageurl ERROR_PAGEURL. Fail locally so a missing value costs no
+        // round-trip.
+        foreach (['sitekey', 'pageurl'] as $key) {
+            if (empty($params[$key])) {
+                throw new ValidationException("'{$key}' is required for Amazon WAF.");
+            }
+        }
+
+        $pageurl = trim((string) $params['pageurl']);
+        $scheme = strtolower((string) (parse_url($pageurl, PHP_URL_SCHEME) ?? ''));
+        if (!in_array($scheme, ['http', 'https'], true) || !str_contains($pageurl, '://')) {
+            throw new ValidationException(
+                "'pageurl' must be a full http or https URL for Amazon WAF, got '{$pageurl}'."
+            );
+        }
+
+        // iv and context come off the same challenge page and only work as a
+        // pair; the server refuses one without the other with
+        // ERROR_BAD_PARAMETERS.
+        if (empty($params['iv']) !== empty($params['context'])) {
+            throw new ValidationException(
+                "Amazon WAF 'iv' and 'context' go together: send both (a challenge "
+                . 'page) or neither (a widget page, or let CapSkip read them from pageurl).'
+            );
+        }
+
+        foreach (self::AMAZON_WAF_SCRIPTS as $key) {
+            $value = $params[$key] ?? null;
+            if (!empty($value) && !self::isAmazonWafScriptUrl($value)) {
+                $shown = is_scalar($value) ? (string) $value : gettype($value);
+                throw new ValidationException(
+                    "'{$key}' must be the https URL of an AWS WAF script on an "
+                    . "awswaf.com host (challenge.js, captcha.js or jsapi.js), got '{$shown}'. "
+                    . 'CapSkip refuses any other script, because it is not an AWS WAF integration.'
+                );
+            }
+        }
+
+        $unknown = self::unknownKeys($params, self::AMAZON_WAF_SUBMIT);
+        if (!empty($unknown)) {
+            throw new ValidationException(
+                'Unsupported parameters for Amazon WAF: ' . self::reprList($unknown) . '.'
+            );
+        }
+    }
+
+    /**
      * Apply aliases + proxy normalization, then validate for the captcha type.
      *
      * @param array<string, mixed> $params
@@ -451,6 +560,15 @@ final class ApiParams
         } elseif ($captchaType === 'friendly_captcha') {
             $params = self::dropUnset($params);
             self::validateFriendlyCaptchaSubmit($params);
+        } elseif ($captchaType === 'amazon_waf') {
+            // An optional left as '' means "not sent" to the server, exactly
+            // like null, so it is dropped rather than tripping the iv/context
+            // pairing.
+            $params = array_filter(
+                self::dropUnset($params),
+                static fn ($value) => $value !== ''
+            );
+            self::validateAmazonWafSubmit($params);
         }
 
         // Skipped for 'normal', which rejects proxy outright with a clearer message.

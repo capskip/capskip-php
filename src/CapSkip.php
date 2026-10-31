@@ -10,11 +10,14 @@ use CapSkip\Exceptions\NetworkException;
 use CapSkip\Exceptions\TimeoutException;
 use CapSkip\Exceptions\ValidationException;
 
-/** Client for the CapSkip local captcha solver (image, reCAPTCHA, Turnstile, GeeTest v3). */
+/**
+ * Client for the CapSkip local captcha solver (image, reCAPTCHA, Turnstile,
+ * GeeTest v3, ALTCHA, Capy Puzzle, CaptchaFox, Friendly Captcha, AWS WAF).
+ */
 class CapSkip
 {
     /** Installed SDK version. */
-    public const VERSION = '1.2.0';
+    public const VERSION = '1.4.0';
 
     /**
      * First poll fires this soon after submitting (in seconds), then the interval
@@ -332,6 +335,58 @@ class CapSkip
     }
 
     /**
+     * Solve an AWS WAF (Amazon WAF) CAPTCHA.
+     *
+     * Only `$sitekey` and `$url` are required:
+     *
+     *  * On a challenge page (the HTTP 405 page with `window.gokuProps`),
+     *    `$sitekey` is `gokuProps.key`, and the `iv` and `context` options are
+     *    `gokuProps.iv` and `gokuProps.context`. Send both or neither -- left
+     *    out, CapSkip reads them from `$url` at solve time, which is the safer
+     *    choice when your copy of the page is more than a few minutes old.
+     *    `challenge_script` and `captcha_script` are the full URLs of the page's
+     *    challenge.js and captcha.js.
+     *  * On a widget page (`AwsWafCaptcha.renderCaptcha`), `$sitekey` is the
+     *    widget's `apiKey`; pass `jsapiScript` with the full URL of jsapi.js and
+     *    no `iv` / `context`.
+     *
+     * Every script URL must be an https URL on an awswaf.com host; anything else
+     * is refused before the request is sent.
+     *
+     * The result carries `captcha_voucher` and `existing_token`, plus the raw
+     * answer as `code`. The two only work as a pair: POST them as JSON to the
+     * `voucher` endpoint next to the page's challenge.js and the response's
+     * `token` is the `aws-waf-token` cookie. Exchange them as soon as they
+     * arrive rather than storing them for later.
+     *
+     * @param array<string, mixed> $options `iv`, `context`, `challenge_script`,
+     *                                       `captcha_script`, `jsapiScript`,
+     *                                       `proxy`, `timeout`, ...
+     *
+     * @return array<string, mixed>
+     */
+    public function amazonWaf(string $sitekey, string $url, array $options = []): array
+    {
+        $given = [];
+        foreach ($options as $key => $value) {
+            if ($value !== null) {
+                $given[$key] = $value;
+            }
+        }
+
+        // A real browser mints the token the voucher is issued for, and the
+        // puzzle rounds go through AWS on top of that, so it gets the longer of
+        // the two timeouts unless the caller asked for a specific one.
+        $result = $this->solve(array_merge(
+            ['timeout' => $this->recaptchaTimeout, 'sitekey' => $sitekey, 'url' => $url],
+            $given,
+            ['method' => 'amazon_waf', 'poll_json' => 1]
+        ));
+
+        return self::applyAmazonWafSolution($result);
+    }
+
+    /**
      * Submit then poll to completion. Used by the higher-level solve methods.
      *
      * @param array<string, mixed> $options Submit params plus optional `timeout`,
@@ -609,6 +664,42 @@ class CapSkip
      */
     public static function applyCapySolution(array $result): array
     {
+        return self::expandObjectAnswer($result, ['captchakey', 'challengekey', 'answer', 'respKey']);
+    }
+
+    /**
+     * An AWS WAF solution is two values that only work as a pair: the voucher
+     * AWS issued for the answered puzzle, and the token it was issued for. The
+     * site's own `voucher` endpoint trades them for the `aws-waf-token` cookie --
+     * expand them into `captcha_voucher` / `existing_token`.
+     *
+     * `code` keeps the raw answer, exactly as for Capy; an answer that does not
+     * parse leaves the result untouched.
+     *
+     * @param array<string, mixed> $result
+     *
+     * @return array<string, mixed>
+     */
+    public static function applyAmazonWafSolution(array $result): array
+    {
+        return self::expandObjectAnswer($result, ['captcha_voucher', 'existing_token']);
+    }
+
+    /**
+     * Copy `$fields` out of an answer that is an object rather than a token.
+     *
+     * The object is read from the createTask-shaped `solution` when the poll
+     * carried one, else from `code` -- an array when polled with json=1, or the
+     * JSON string sent after `OK|` in plain-text mode. `code` itself is left as
+     * it arrived, and an answer that does not parse leaves the result untouched.
+     *
+     * @param array<string, mixed> $result
+     * @param array<int, string>   $fields
+     *
+     * @return array<string, mixed>
+     */
+    private static function expandObjectAnswer(array $result, array $fields): array
+    {
         $payload = $result['solution'] ?? null;
         unset($result['solution']);
 
@@ -625,7 +716,7 @@ class CapSkip
             return $result;
         }
 
-        foreach (['captchakey', 'challengekey', 'answer', 'respKey'] as $field) {
+        foreach ($fields as $field) {
             if (array_key_exists($field, $payload)) {
                 $result[$field] = $payload[$field];
             }
@@ -759,6 +850,9 @@ class CapSkip
         }
         if ($method === 'friendly_captcha') {
             return ApiParams::prepareSubmitParams($params, 'friendly_captcha');
+        }
+        if ($method === 'amazon_waf') {
+            return ApiParams::prepareSubmitParams($params, 'amazon_waf');
         }
 
         return ApiParams::applyProxy(ApiParams::applyParamAliases($params));

@@ -9,7 +9,7 @@ POST http://<host>:<port>/in.php   → submit captcha
 GET  http://<host>:<port>/res.php  → poll result
 ```
 
-The SDK only supports the four captcha types documented by CapSkip.
+The SDK supports the captcha types documented by CapSkip, listed below.
 
 ---
 
@@ -26,6 +26,7 @@ The SDK only supports the four captcha types documented by CapSkip.
 | Capy Puzzle (slide) | `capy()` | `capy` |
 | CaptchaFox (widget) | `captchafox()` | `captchafox` |
 | Friendly Captcha (proof-of-work) | `friendlyCaptcha()` | `friendly_captcha` |
+| AWS WAF (challenge page or widget) | `amazonWaf()` | `amazon_waf` |
 
 **Proxy** is supported for every method except image
 captcha. For ALTCHA the proxy is used only for the `challenge_url` fetch.
@@ -596,6 +597,104 @@ browser.
 
 ---
 
+## 10. AWS WAF — `amazonWaf(string $sitekey, string $url, array $options = [])`
+
+The CAPTCHA that AWS WAF puts in front of a site, either as a full-page challenge
+or as a widget embedded in a form. CapSkip solves it in a real browser and hands
+back the pair AWS trades for the `aws-waf-token` cookie. Public docs:
+<https://capskip.com/api-docs/#aws-waf>.
+
+### POST `/in.php`
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `key` | string | Yes | CapSkip API key |
+| `method` | string | Yes | `amazon_waf` |
+| `sitekey` | string | Yes | `gokuProps.key` on a challenge page, or the widget's `apiKey` |
+| `pageurl` | string | Yes | Full http or https URL of the protected page |
+| `iv` | string | No | `gokuProps.iv`. Send together with `context`, or not at all |
+| `context` | string | No | `gokuProps.context`. Send together with `iv`, or not at all |
+| `challenge_script` | string | No | Full URL of the page's `challenge.js` |
+| `captcha_script` | string | No | Full URL of the page's `captcha.js` |
+| `jsapiScript` | string | No | Full URL of `jsapi.js`, on a widget page |
+| `json` | int | No | `0` plain text, `1` JSON |
+| `proxy` | string | No | Proxy address |
+| `proxytype` | string | No | Proxy type |
+
+The SDK accepts `challengeScript`, `captchaScript` and `jsapi_script` as aliases
+and sends the documented names. An optional passed as `null` or `''` is not sent,
+since the server treats an empty value as absent.
+
+The SDK refuses, before the request is made:
+
+- a missing `sitekey` or `pageurl`, or a `pageurl` that is not an absolute http
+  or https URL;
+- `iv` without `context`, or `context` without `iv`;
+- any script URL that is not https, not on a host ending in `.awswaf.com`,
+  carries credentials or a port other than 443, or whose path is not
+  `/<one or more segments>/challenge.js`, `captcha.js` or `jsapi.js` (a query
+  string is fine). CapSkip POSTs the solution to the host the script names, so it
+  refuses any script that is not an AWS WAF integration.
+
+### Challenge page or widget page
+
+- **Challenge page**: the HTTP 405 page that sets `window.gokuProps`. `sitekey`,
+  `iv` and `context` are `gokuProps.key`, `.iv` and `.context`; `challenge_script`
+  and `captcha_script` are the page's two script URLs. `iv` and `context` can be
+  left out, in which case CapSkip reads them from `pageurl` at solve time. That is
+  the safer choice when your copy of the page is more than a few minutes old.
+- **Widget page**: a form that calls `AwsWafCaptcha.renderCaptcha`. `sitekey` is
+  the widget's `apiKey` and `jsapiScript` the full URL of `jsapi.js`. No `iv` or
+  `context`.
+
+### GET `/res.php`
+
+The answer is **not a token**. With `json=1` the object arrives in `request`:
+
+```json
+{"status":1,"request":{"captcha_voucher":"…","existing_token":"…"}}
+```
+
+and in plain-text mode as one line of JSON: `OK|{"captcha_voucher":"…","existing_token":"…"}`.
+The SDK expands it into two result fields. See [Return value](#return-value).
+
+### SDK usage
+
+```php
+// Challenge page
+$result = $solver->amazonWaf(
+    'AQIDAHjcYuEXAMPLEghicBgQ/7bFaQZ+m5FKCMDnO+vTbNg96AHDh0IR5vgzHNceHYqZR+GOAAAAfjB8',
+    'https://example.com/',
+    [
+        'iv' => 'CgAFRDIjfgAAA5yY',
+        'context' => 'Rbp3r8fvbuhmrCqpUe8Mh1TLvs8OSKJZiSs2vCF4dt9rxVZI7xYJa2n5k/9r+XaXe7KUIu2I8nXTDHHkDvIOTDc2',
+        'challenge_script' => 'https://3f2a9c7d41b0.edge.sdk.awswaf.com/3f2a9c7d41b0/8e51d0c7a2f4/challenge.js',
+    ]
+);
+
+// Widget page
+$result = $solver->amazonWaf(
+    'Xr9kEXAMPLE2bWQx1vTq8LmZ0aYc4dHs7nFp3gJt6uKw5eRi9AbCdEfGh=_0_1',
+    'https://example.com/signup',
+    ['jsapiScript' => 'https://5b7e0a19c3d8.us-east-1.captcha-sdk.awswaf.com/5b7e0a19c3d8/jsapi.js']
+);
+
+$result['captcha_voucher'];
+$result['existing_token'];
+```
+
+### Exchanging the pair for the cookie
+
+POST `{"captcha_voucher": "…", "existing_token": "…"}` as JSON to the `voucher`
+endpoint beside the page's `challenge.js`. The response's `token` is the value of
+the `aws-waf-token` cookie; set it and reload the protected page. The pair is
+short-lived, so exchange it as soon as it arrives rather than storing it.
+
+Uses `recaptchaTimeout`: a real browser mints the token the voucher is issued
+for, and the puzzle rounds go through AWS on top of that.
+
+---
+
 ## Return value
 
 Every solve method returns:
@@ -635,6 +734,18 @@ target form takes (`code` keeps the raw answer):
 ]
 ```
 
+AWS WAF returns an object too, expanded into the pair the site's `voucher`
+endpoint trades for the `aws-waf-token` cookie (`code` keeps the raw answer):
+
+```php
+[
+    'captchaId' => '12345',
+    'code' => ['captcha_voucher' => '…', 'existing_token' => '…'],
+    'captcha_voucher' => 'eyJ2b3VjaGVyIjoiRVhBTVBMRSJ9.9QwZcEXAMPLEvoucherJk4LmN0pQ',
+    'existing_token' => '7d4c2a91-EXAMPLE-4f0b-9e6d-3a1b5c8e2f70:EQoAeXAMPLEtokenAAAA:Wm9wc2E=',
+]
+```
+
 ---
 
 ## SDK parameter aliases
@@ -654,6 +765,9 @@ Convenience aliases mapped before sending to CapSkip:
 | `captchaKey` | `captchakey` |
 | `moduleScript` | `module_script` |
 | `nomoduleScript` / `noModuleScript` | `nomodule_script` |
+| `challengeScript` | `challenge_script` |
+| `captchaScript` | `captcha_script` |
+| `jsapi_script` | `jsapiScript` |
 | `proxy` array | `proxy` + `proxytype` strings |
 
 ```php

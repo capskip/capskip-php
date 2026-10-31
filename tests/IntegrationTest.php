@@ -352,4 +352,100 @@ class IntegrationTest extends TestCase
         $solver = $this->makeSolver();
         $solver->friendlyCaptcha('FCMGEMUD2M567T8G', self::URL, ['version' => 'v3']);
     }
+
+    // -- AWS WAF ------------------------------------------------------------
+
+    private const WAF_KEY = 'AQIDAHjcYuEXAMPLEghicBgQ/7bFaQZ+m5FKCMDnO+vTbNg96AHDh0IR5vgzHNceHYqZR+GOAAAAfjB8';
+    private const WAF_IV = 'CgAFRDIjfgAAA5yY';
+    private const WAF_CONTEXT = 'Rbp3r8fvbuhmrCqpUe8Mh1TLvs8OSKJZiSs2vCF4dt9rxVZI7xYJa2n5k/9r+XaXe7KUIu2I8nXTDHHkDvIOTDc2';
+    private const WAF_CHALLENGE_JS = 'https://3f2a9c7d41b0.edge.sdk.awswaf.com/3f2a9c7d41b0/8e51d0c7a2f4/challenge.js';
+    private const WAF_JSAPI = 'https://5b7e0a19c3d8.us-east-1.captcha-sdk.awswaf.com/5b7e0a19c3d8/jsapi.js';
+
+    /** @return array<string, mixed> What the mock server decoded from the last submit. */
+    private function lastSubmit(): array
+    {
+        $body = (string) file_get_contents(self::$server->baseUrl() . '/last_submit');
+
+        return (array) json_decode($body, true);
+    }
+
+    public function testAmazonWafChallengePage(): void
+    {
+        $solver = $this->makeSolver();
+        $result = $solver->amazonWaf(self::WAF_KEY, self::URL, [
+            'iv' => self::WAF_IV,
+            'context' => self::WAF_CONTEXT,
+            'challenge_script' => self::WAF_CHALLENGE_JS,
+        ]);
+
+        $expected = json_decode(MockServer::AMAZON_WAF_SOLUTION_JSON, true);
+        $this->assertSame($expected['captcha_voucher'], $result['captcha_voucher']);
+        $this->assertSame($expected['existing_token'], $result['existing_token']);
+        $this->assertNotEmpty($result['captchaId']);
+    }
+
+    public function testAmazonWafWidgetPage(): void
+    {
+        $solver = $this->makeSolver();
+        $result = $solver->amazonWaf(self::WAF_KEY . '_0_1', self::URL, [
+            'jsapiScript' => self::WAF_JSAPI,
+        ]);
+
+        $expected = json_decode(MockServer::AMAZON_WAF_SOLUTION_JSON, true);
+        $this->assertSame($expected['captcha_voucher'], $result['captcha_voucher']);
+        $this->assertSame($expected['existing_token'], $result['existing_token']);
+        $this->assertSame(self::WAF_JSAPI, $this->lastSubmit()['jsapiScript']);
+    }
+
+    public function testAmazonWafKeysWithPlusSlashEqualsCrossTheWire(): void
+    {
+        // The keys carry +, / and =, which a form body has to URL-encode; a key
+        // mangled on the way would be a different firewall configuration.
+        $solver = $this->makeSolver();
+        $result = $solver->amazonWaf(self::WAF_KEY . '==', self::URL, [
+            'iv' => self::WAF_IV,
+            'context' => self::WAF_CONTEXT,
+        ]);
+
+        $sent = $this->lastSubmit();
+        $this->assertSame('amazon_waf', $sent['method']);
+        $this->assertSame(self::WAF_KEY . '==', $sent['sitekey']);
+        $this->assertSame(self::WAF_CONTEXT, $sent['context']);
+        $expected = json_decode(MockServer::AMAZON_WAF_SOLUTION_JSON, true);
+        $this->assertSame($expected['existing_token'], $result['existing_token']);
+    }
+
+    public function testAmazonWafPlainTextAnswerExpandsToo(): void
+    {
+        // Polled without json=1, the same object arrives as one line of JSON
+        // after OK|.
+        $solver = $this->makeSolver();
+        $id = $solver->send([
+            'method' => 'amazon_waf',
+            'sitekey' => self::WAF_KEY,
+            'url' => self::URL,
+        ]);
+        $result = CapSkip::applyAmazonWafSolution(['captchaId' => $id, 'code' => $solver->getResult($id)]);
+
+        $this->assertSame(MockServer::AMAZON_WAF_SOLUTION_JSON, $result['code']);
+        $expected = json_decode(MockServer::AMAZON_WAF_SOLUTION_JSON, true);
+        $this->assertSame($expected['captcha_voucher'], $result['captcha_voucher']);
+        $this->assertSame($expected['existing_token'], $result['existing_token']);
+    }
+
+    public function testAmazonWafLoneIvIsRefusedLocally(): void
+    {
+        $this->expectException(ValidationException::class);
+
+        $this->makeSolver()->amazonWaf(self::WAF_KEY, self::URL, ['iv' => self::WAF_IV]);
+    }
+
+    public function testAmazonWafOffAwsScriptIsRefusedLocally(): void
+    {
+        $this->expectException(ValidationException::class);
+
+        $this->makeSolver()->amazonWaf(self::WAF_KEY, self::URL, [
+            'jsapiScript' => 'https://evil.example/jsapi.js',
+        ]);
+    }
 }

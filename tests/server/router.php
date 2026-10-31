@@ -36,6 +36,12 @@ const MOCK_CAPTCHAFOX_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Ap
 // roughly six kilobytes, which shape-wise changes nothing the SDK does with it.
 const MOCK_FRIENDLY_CAPTCHA_TOKEN = 'c62c4da36bbaf7f253873035832709ef.aqwpWwdbzRWKY/UQAQwwpgAAAAAAAAAAM7hBvJOzqjc=.AAAAAArcCQABAAAAxv8QAAIAAACKYRgA.AgAB';
 
+// An AWS WAF answer is two values that only work as a pair, so like Capy's it is
+// an object: json=1 puts it straight into `request`, and plain text sends it as
+// one line of JSON after OK|. The shapes follow what AWS really issues -- a
+// dotted voucher, and a token of three colon-separated parts.
+const MOCK_AMAZON_WAF_SOLUTION_JSON = '{"captcha_voucher":"eyJ2b3VjaGVyIjoiRVhBTVBMRSJ9.9QwZcEXAMPLEvoucherJk4LmN0pQ","existing_token":"7d4c2a91-EXAMPLE-4f0b-9e6d-3a1b5c8e2f70:EQoAeXAMPLEtokenAAAA:Wm9wc2E="}';
+
 // A minimal valid 1x1 PNG. The SDK never inspects the bytes, so exact pixels do
 // not matter — the mock just needs to return something for /image.png.
 const MOCK_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
@@ -68,6 +74,13 @@ $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
 if ($method === 'GET' && $path === '/image.png') {
     header('Content-Type: image/png');
     echo base64_decode(MOCK_PNG_BASE64);
+    exit;
+}
+
+// The fields the most recent in.php submit carried, as the server decoded them
+// (the API key left out), so a test can check a value crossed the wire intact.
+if ($method === 'GET' && $path === '/last_submit') {
+    $sendText((string) json_encode($loadState($stateFile)['lastSubmit'] ?? new stdClass()), 'application/json');
     exit;
 }
 
@@ -121,6 +134,17 @@ if ($method === 'GET' && $path === '/res.php') {
             ]), 'application/json');
         } else {
             $sendText('OK|' . MOCK_CAPY_SOLUTION_JSON);
+        }
+    } elseif (($state['idType'][$cid] ?? '') === 'amazon_waf') {
+        // What CapSkip sends: the bare status/request pair, with the two-value
+        // object as `request` -- no createTask `solution`.
+        if ($wantJson) {
+            $sendText((string) json_encode([
+                'status' => 1,
+                'request' => json_decode(MOCK_AMAZON_WAF_SOLUTION_JSON, true),
+            ]), 'application/json');
+        } else {
+            $sendText('OK|' . MOCK_AMAZON_WAF_SOLUTION_JSON);
         }
     } elseif (($state['idType'][$cid] ?? '') === 'captchafox') {
         // The UA is the browser's own, and CapSkip reports it at the top level
@@ -183,6 +207,9 @@ if ($method === 'POST' && $path === '/in.php') {
     }
 
     $state['idType'][$cid] = $submitMethod;
+    $lastSubmit = $_POST;
+    unset($lastSubmit['key']);
+    $state['lastSubmit'] = $lastSubmit;
     $saveState($stateFile, $state);
 
     // in.php returns JSON when the submit carried json=1, mirroring real CapSkip.
