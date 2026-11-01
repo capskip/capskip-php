@@ -42,6 +42,15 @@ const MOCK_FRIENDLY_CAPTCHA_TOKEN = 'c62c4da36bbaf7f253873035832709ef.aqwpWwdbzR
 // dotted voucher, and a token of three colon-separated parts.
 const MOCK_AMAZON_WAF_SOLUTION_JSON = '{"captcha_voucher":"eyJ2b3VjaGVyIjoiRVhBTVBMRSJ9.9QwZcEXAMPLEvoucherJk4LmN0pQ","existing_token":"7d4c2a91-EXAMPLE-4f0b-9e6d-3a1b5c8e2f70:EQoAeXAMPLEtokenAAAA:Wm9wc2E="}';
 
+// DataDome answers with a cookie, not a token: the Set-Cookie value exactly as
+// DataDome set it, attributes included. Next to it CapSkip names the User-Agent
+// the cookie was earned with (the caller's, or its own browser's when the task
+// sent none) and, only when the task sent no proxy and the app's DataDome proxy
+// list supplied one, that proxy as host:port.
+const MOCK_DATADOME_COOKIE = 'datadome=FAPPpli4jkT1MZGtgF8ez7mjSz8MrJ9fGRNE51Gj79cq9fXp5xn~F1P5APWjqvJojf4U9dq0R81Xaj2hpYtjle95mkg; Max-Age=31536000; Domain=.example.com; Path=/; Secure; SameSite=Lax';
+const MOCK_DATADOME_BROWSER_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36';
+const MOCK_DATADOME_LIST_PROXY = '203.0.113.10:8080';
+
 // A minimal valid 1x1 PNG. The SDK never inspects the bytes, so exact pixels do
 // not matter — the mock just needs to return something for /image.png.
 const MOCK_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
@@ -146,6 +155,24 @@ if ($method === 'GET' && $path === '/res.php') {
         } else {
             $sendText('OK|' . MOCK_AMAZON_WAF_SOLUTION_JSON);
         }
+    } elseif (($state['idType'][$cid] ?? '') === 'datadome') {
+        // As CapSkip answers: the cookie as `request`, the User-Agent it was
+        // earned with, and `proxy` only when the app's own list supplied one.
+        $sent = $state['idFields'][$cid] ?? [];
+        $userAgent = ($sent['userAgent'] ?? '') ?: (($sent['useragent'] ?? '') ?: MOCK_DATADOME_BROWSER_USER_AGENT);
+        if ($wantJson) {
+            $reply = [
+                'status' => 1,
+                'request' => MOCK_DATADOME_COOKIE,
+                'userAgent' => $userAgent,
+            ];
+            if (($sent['proxy'] ?? '') === '') {
+                $reply['proxy'] = MOCK_DATADOME_LIST_PROXY;
+            }
+            $sendText((string) json_encode($reply), 'application/json');
+        } else {
+            $sendText('OK|' . MOCK_DATADOME_COOKIE);
+        }
     } elseif (($state['idType'][$cid] ?? '') === 'captchafox') {
         // The UA is the browser's own, and CapSkip reports it at the top level
         // and inside solution both.
@@ -210,6 +237,8 @@ if ($method === 'POST' && $path === '/in.php') {
     $lastSubmit = $_POST;
     unset($lastSubmit['key']);
     $state['lastSubmit'] = $lastSubmit;
+    // Remembered per id too: a DataDome reply depends on what the submit sent.
+    $state['idFields'][$cid] = $lastSubmit;
     $saveState($stateFile, $state);
 
     // in.php returns JSON when the submit carried json=1, mirroring real CapSkip.

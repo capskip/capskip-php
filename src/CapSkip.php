@@ -12,12 +12,13 @@ use CapSkip\Exceptions\ValidationException;
 
 /**
  * Client for the CapSkip local captcha solver (image, reCAPTCHA, Turnstile,
- * GeeTest v3, ALTCHA, Capy Puzzle, CaptchaFox, Friendly Captcha, AWS WAF).
+ * GeeTest v3, ALTCHA, Capy Puzzle, CaptchaFox, Friendly Captcha, AWS WAF,
+ * DataDome).
  */
 class CapSkip
 {
     /** Installed SDK version. */
-    public const VERSION = '1.4.0';
+    public const VERSION = '1.5.0';
 
     /**
      * First poll fires this soon after submitting (in seconds), then the interval
@@ -387,6 +388,71 @@ class CapSkip
     }
 
     /**
+     * Solve a DataDome challenge and return the `datadome` cookie.
+     *
+     * The arguments follow 2Captcha's `datadome(captcha_url, pageurl, userAgent,
+     * proxy)` order, with `userAgent` and `proxy` optional and passed in
+     * `$options`:
+     *
+     *  * `$captchaUrl` is the address of the challenge iframe on
+     *    geo.captcha-delivery.com, under /captcha/ (slider) or /interstitial/
+     *    (device check). Take the iframe's src from the block page, or build it
+     *    from the page's `var dd` object as the API docs show.
+     *  * `$url` is the page that returned the block page.
+     *  * `userAgent` is the one you will send with the cookie. It must be Chrome
+     *    for Windows with the same major version as the browser CapSkip solves
+     *    with; leave it out and CapSkip uses that browser's own.
+     *  * `proxy` is the proxy your later requests go through, as a URI string or
+     *    `['type' => 'HTTP', 'uri' => 'login:password@IP:PORT']`.
+     *
+     * DataDome ties the cookie to the IP address and User-Agent that earned it.
+     * The result carries:
+     *
+     *  * `code` -- the cookie exactly as DataDome set it, attributes included;
+     *  * `cookie` -- just the `datadome=...` pair, for a Cookie header;
+     *  * `userAgent` -- the User-Agent the cookie was earned with. Send it with
+     *    every request that carries the cookie;
+     *  * `proxy` -- present only when you sent no proxy and CapSkip solved
+     *    through its own DataDome proxy list: that proxy as `host:port`. The
+     *    cookie works only through it.
+     *
+     * @param array<string, mixed> $options `userAgent`, `proxy`, `proxytype`,
+     *                                       `timeout`, ...
+     *
+     * @return array<string, mixed>
+     */
+    public function dataDome(string $captchaUrl, string $url, array $options = []): array
+    {
+        // An empty positional is left out rather than sent, so `captchaUrl` /
+        // `pageurl` in $options can stand in for it without tripping the alias
+        // conflict check -- and a value missing from both is still refused.
+        $base = ['timeout' => $this->recaptchaTimeout];
+        if ($captchaUrl !== '') {
+            $base['captcha_url'] = $captchaUrl;
+        }
+        if ($url !== '') {
+            $base['url'] = $url;
+        }
+
+        $given = [];
+        foreach ($options as $key => $value) {
+            if ($value !== null) {
+                $given[$key] = $value;
+            }
+        }
+
+        // A real browser session, slider or device check, so it gets the
+        // longer of the two timeouts unless the caller asked for a specific one.
+        $result = $this->solve(array_merge(
+            $base,
+            $given,
+            ['method' => 'datadome', 'poll_json' => 1]
+        ));
+
+        return self::applyDataDomeSolution($result);
+    }
+
+    /**
      * Submit then poll to completion. Used by the higher-level solve methods.
      *
      * @param array<string, mixed> $options Submit params plus optional `timeout`,
@@ -686,6 +752,30 @@ class CapSkip
     }
 
     /**
+     * Expose the DataDome cookie as `cookie`, ready for a Cookie header.
+     *
+     * `code` keeps the cookie exactly as DataDome set it, attributes included
+     * (`datadome=...; Max-Age=...; Domain=...; Path=/; Secure; SameSite=Lax`),
+     * for a cookie jar. `cookie` is the part before the first semicolon, the
+     * `datadome=...` pair a request sends back. `userAgent` and, when CapSkip
+     * picked the proxy, `proxy` are carried through from the poll as they are.
+     * An answer that is not a string is left untouched.
+     *
+     * @param array<string, mixed> $result
+     *
+     * @return array<string, mixed>
+     */
+    public static function applyDataDomeSolution(array $result): array
+    {
+        $code = $result['code'] ?? null;
+        if (is_string($code) && $code !== '') {
+            $result['cookie'] = trim(explode(';', $code, 2)[0]);
+        }
+
+        return $result;
+    }
+
+    /**
      * Copy `$fields` out of an answer that is an object rather than a token.
      *
      * The object is read from the createTask-shaped `solution` when the poll
@@ -805,6 +895,14 @@ class CapSkip
             if ($userAgent) {
                 $result['userAgent'] = $userAgent;
             }
+            // DataDome names the proxy a task was solved through when the task
+            // sent none and CapSkip took one from its own DataDome proxy list.
+            // The cookie only works from that address, so it is reported rather
+            // than dropped.
+            $proxy = $polled['proxy'] ?? null;
+            if ($proxy) {
+                $result['proxy'] = $proxy;
+            }
             // ALTCHA's createTask-shaped `solution` object. Carried through so
             // applyAltchaSolution can read the counter the server already worked
             // out, which is the only reliable source for a proof-of-work v2
@@ -853,6 +951,9 @@ class CapSkip
         }
         if ($method === 'amazon_waf') {
             return ApiParams::prepareSubmitParams($params, 'amazon_waf');
+        }
+        if ($method === 'datadome') {
+            return ApiParams::prepareSubmitParams($params, 'datadome');
         }
 
         return ApiParams::applyProxy(ApiParams::applyParamAliases($params));

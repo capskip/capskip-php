@@ -80,6 +80,40 @@ final class ApiParams
      */
     private const AMAZON_WAF_SCRIPT_PATH = '~^(/[A-Za-z0-9_-]+)+/(challenge|captcha|jsapi)\.js$~';
 
+    /** @var array<int, string> */
+    public const DATADOME_SUBMIT = [
+        'method', 'captcha_url', 'pageurl', 'useragent', 'json', 'proxy', 'proxytype',
+    ];
+
+    /**
+     * Every DataDome challenge is served from this domain or a subdomain of it
+     * (geo.captcha-delivery.com in practice). CapSkip refuses any other host.
+     */
+    public const DATADOME_CHALLENGE_DOMAIN = 'captcha-delivery.com';
+
+    /**
+     * The two challenge pages: /captcha/ draws the slider, /interstitial/ runs
+     * the device check. Any other path renders nothing to solve.
+     *
+     * @var array<int, string>
+     */
+    public const DATADOME_CHALLENGE_PATHS = ['/captcha', '/interstitial'];
+
+    /** A Chrome version as Chrome writes it in its User-Agent: four dotted numbers. */
+    private const CHROME_VERSION = '~\bChrome/(\d+)\.\d+\.\d+\.\d+\b~';
+
+    /**
+     * Chrome-derived browsers and non-desktop builds. A User-Agent carrying any
+     * of these is not stock Windows Chrome, so a cookie earned under it would be
+     * refused on replay; the server answers ERROR_WRONG_USERAGENT for each.
+     *
+     * @var array<int, string>
+     */
+    private const NOT_STOCK_WINDOWS_CHROME = [
+        'Edg/', 'EdgA/', 'OPR/', 'YaBrowser/', 'SamsungBrowser/', 'Vivaldi/',
+        'HeadlessChrome/', 'CriOS/', 'Mobile', 'Android',
+    ];
+
     /**
      * CapSkip solves the puzzle family only. `avatar` is a different challenge
      * behind a different endpoint; the server refuses it at submit time rather
@@ -135,6 +169,10 @@ final class ApiParams
         'challengeScript' => 'challenge_script',
         'captchaScript' => 'captcha_script',
         'jsapi_script' => 'jsapiScript',
+        // DataDome: 2Captcha and the API document captcha_url; createTask-style
+        // callers arrive with captchaUrl.
+        'captchaUrl' => 'captcha_url',
+        'captchaURL' => 'captcha_url',
     ];
 
     /**
@@ -528,6 +566,157 @@ final class ApiParams
         }
     }
 
+    /** True for captcha-delivery.com itself or any subdomain of it. */
+    private static function isDataDomeHost(string $host): bool
+    {
+        $host = strtolower($host);
+
+        return $host === self::DATADOME_CHALLENGE_DOMAIN
+            || str_ends_with($host, '.' . self::DATADOME_CHALLENGE_DOMAIN);
+    }
+
+    /**
+     * The query of a DataDome challenge URL as an array, or null if it is not one.
+     *
+     * Mirrors the server: an https URL on captcha-delivery.com (or a
+     * subdomain), path /captcha/ or /interstitial/, carrying initialCid, hash
+     * and cid. An iframe src copied HTML-escaped (&amp;) and a scheme-relative
+     * //geo... URL are both read the way the server reads them.
+     *
+     * @param mixed $url
+     *
+     * @return array<string, mixed>|null
+     */
+    public static function parseDataDomeCaptchaUrl($url): ?array
+    {
+        if (!is_scalar($url)) {
+            return null;
+        }
+        $text = html_entity_decode(trim((string) $url), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        if (str_starts_with($text, '//')) {
+            $text = 'https:' . $text;
+        }
+        $parts = parse_url($text);
+        if (!is_array($parts)) {
+            return null;
+        }
+        if (strtolower((string) ($parts['scheme'] ?? '')) !== 'https'
+            || !self::isDataDomeHost((string) ($parts['host'] ?? ''))
+        ) {
+            return null;
+        }
+        $path = strtolower(rtrim((string) ($parts['path'] ?? ''), '/'));
+        if (!in_array($path, self::DATADOME_CHALLENGE_PATHS, true)) {
+            return null;
+        }
+        $query = [];
+        parse_str((string) ($parts['query'] ?? ''), $query);
+        foreach (['initialCid', 'hash', 'cid'] as $key) {
+            if (!isset($query[$key]) || !is_string($query[$key]) || $query[$key] === '') {
+                return null;
+            }
+        }
+
+        return $query;
+    }
+
+    /**
+     * True for a stock Chrome-for-Windows User-Agent, the only kind CapSkip takes.
+     *
+     * DataDome ties the cookie to the browser that earned it, and CapSkip
+     * solves in Chrome on Windows, so a cookie for any other User-Agent would be
+     * refused on replay. The server also requires the same Chrome major version
+     * as its own browser; that part can only be checked there.
+     *
+     * @param mixed $userAgent
+     */
+    public static function isDataDomeUserAgent($userAgent): bool
+    {
+        if (!is_scalar($userAgent)) {
+            return false;
+        }
+        $ua = (string) $userAgent;
+        if (!str_contains($ua, 'Windows NT ') || preg_match(self::CHROME_VERSION, $ua) !== 1) {
+            return false;
+        }
+        foreach (self::NOT_STOCK_WINDOWS_CHROME as $token) {
+            if (str_contains($ua, $token)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * @param array<string, mixed> $params
+     */
+    public static function validateDataDomeSubmit(array $params): void
+    {
+        // Without captcha_url the server answers ERROR_BAD_PARAMETERS and
+        // without pageurl ERROR_PAGEURL. Fail locally so a missing value costs
+        // no round-trip.
+        foreach (['captcha_url', 'pageurl'] as $key) {
+            if (empty($params[$key])) {
+                throw new ValidationException("'{$key}' is required for DataDome.");
+            }
+        }
+
+        $captchaUrl = $params['captcha_url'];
+        $query = self::parseDataDomeCaptchaUrl($captchaUrl);
+        if ($query === null) {
+            $shown = is_scalar($captchaUrl) ? (string) $captchaUrl : gettype($captchaUrl);
+            throw new ValidationException(
+                "'captcha_url' must be the https address of a DataDome challenge on "
+                . 'captcha-delivery.com, under /captcha/ or /interstitial/ and carrying '
+                . "initialCid, hash and cid, got '{$shown}'. Take it from the block "
+                . "page's iframe src, or build it from the page's `var dd` object."
+            );
+        }
+        // t=bv is DataDome saying the address that fetched the block page is
+        // banned. Nothing sent from it can pass, and the server refuses the
+        // task with ERROR_PROXY_BANNED, so say so before the round-trip.
+        if (($query['t'] ?? null) === 'bv') {
+            throw new ValidationException(
+                'This DataDome block page bans the IP address that requested it '
+                . '(t=bv), so no solve from that address can pass. Change the address '
+                . '(proxy), request the page again and submit the new captcha_url.'
+            );
+        }
+
+        $pageurl = trim(is_scalar($params['pageurl']) ? (string) $params['pageurl'] : '');
+        $page = parse_url($pageurl);
+        if (!is_array($page)
+            || !in_array(strtolower((string) ($page['scheme'] ?? '')), ['http', 'https'], true)
+            || (string) ($page['host'] ?? '') === ''
+            || self::isDataDomeHost((string) $page['host'])
+        ) {
+            throw new ValidationException(
+                "'pageurl' must be the full http or https URL of the page that "
+                . "returned the DataDome block page, got '{$pageurl}'."
+            );
+        }
+
+        $userAgent = $params['useragent'] ?? null;
+        if ($userAgent !== null && $userAgent !== '' && !self::isDataDomeUserAgent($userAgent)) {
+            $shown = is_scalar($userAgent) ? (string) $userAgent : gettype($userAgent);
+            throw new ValidationException(
+                "DataDome 'userAgent' must be a stock Chrome for Windows User-Agent "
+                . 'with the same major version as the browser CapSkip solves with, got '
+                . "'{$shown}'. The cookie only works with the User-Agent that earned "
+                . "it. Leave it out and CapSkip uses its own browser's, which the "
+                . 'result reports as `userAgent`.'
+            );
+        }
+
+        $unknown = self::unknownKeys($params, self::DATADOME_SUBMIT);
+        if (!empty($unknown)) {
+            throw new ValidationException(
+                'Unsupported parameters for DataDome: ' . self::reprList($unknown) . '.'
+            );
+        }
+    }
+
     /**
      * Apply aliases + proxy normalization, then validate for the captcha type.
      *
@@ -569,6 +758,13 @@ final class ApiParams
                 static fn ($value) => $value !== ''
             );
             self::validateAmazonWafSubmit($params);
+        } elseif ($captchaType === 'datadome') {
+            // As for AWS WAF, an optional left as '' means "not sent".
+            $params = array_filter(
+                self::dropUnset($params),
+                static fn ($value) => $value !== ''
+            );
+            self::validateDataDomeSubmit($params);
         }
 
         // Skipped for 'normal', which rejects proxy outright with a clearer message.

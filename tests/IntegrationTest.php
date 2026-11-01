@@ -448,4 +448,72 @@ class IntegrationTest extends TestCase
             'jsapiScript' => 'https://evil.example/jsapi.js',
         ]);
     }
+
+    // -- DataDome -----------------------------------------------------------
+
+    private const DD_PAGE = 'https://www.example.com/';
+    private const DD_CAPTCHA_URL = 'https://geo.captcha-delivery.com/captcha/?initialCid=AHrlqAAAAAMA7KBvCr0n4cEAG330MA%3D%3D'
+        . '&hash=D013AA612AB2224D03B2318D0F5B19&cid=KzE6_pZBBTHdCdvZkauT9VAshi0wS7~v5_M_MacEtdw8'
+        . '&t=fe&referer=https%3A%2F%2Fwww.example.com%2F&s=45225&e=549255a0289eaf17af60822309ab8db4&dm=cd';
+    private const DD_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+        . '(KHTML, like Gecko) Chrome/156.0.0.1 Safari/537.36';
+
+    public function testDataDomeWithoutProxyReportsTheListProxy(): void
+    {
+        // No proxy sent: CapSkip solved through its own DataDome list, so the
+        // result names that proxy and the browser's User-Agent.
+        $result = $this->makeSolver()->dataDome(self::DD_CAPTCHA_URL, self::DD_PAGE);
+
+        $this->assertSame(MockServer::DATADOME_COOKIE, $result['code']);
+        $this->assertSame(explode(';', MockServer::DATADOME_COOKIE)[0], $result['cookie']);
+        $this->assertSame(MockServer::DATADOME_BROWSER_USER_AGENT, $result['userAgent']);
+        $this->assertSame(MockServer::DATADOME_LIST_PROXY, $result['proxy']);
+
+        $sent = $this->lastSubmit();
+        $this->assertSame('datadome', $sent['method']);
+        $this->assertSame(self::DD_CAPTCHA_URL, $sent['captcha_url']);
+        $this->assertSame(self::DD_PAGE, $sent['pageurl']);
+    }
+
+    public function testDataDomeWithOwnProxyAndUserAgent(): void
+    {
+        // A proxy sent with the task: no `proxy` comes back, and the User-Agent
+        // is the one sent -- it crossed the wire intact, ~ ; ( ) and all.
+        $result = $this->makeSolver()->dataDome(self::DD_CAPTCHA_URL, self::DD_PAGE, [
+            'userAgent' => self::DD_USER_AGENT,
+            'proxy' => ['type' => 'HTTP', 'uri' => 'login:p%40ss@203.0.113.7:3128'],
+        ]);
+
+        $this->assertSame(explode(';', MockServer::DATADOME_COOKIE)[0], $result['cookie']);
+        $this->assertSame(self::DD_USER_AGENT, $result['userAgent']);
+        $this->assertArrayNotHasKey('proxy', $result);
+
+        $sent = $this->lastSubmit();
+        $this->assertSame(self::DD_USER_AGENT, $sent['useragent']);
+        $this->assertSame('login:p%40ss@203.0.113.7:3128', $sent['proxy']);
+        $this->assertSame('HTTP', $sent['proxytype']);
+    }
+
+    public function testDataDomePlainTextAnswerExpandsToo(): void
+    {
+        // Polled without json=1, the cookie arrives after OK| -- no userAgent
+        // or proxy beside it, which is why dataDome() polls with json=1.
+        $solver = $this->makeSolver();
+        $id = $solver->send([
+            'method' => 'datadome',
+            'captcha_url' => self::DD_CAPTCHA_URL,
+            'url' => self::DD_PAGE,
+        ]);
+        $result = CapSkip::applyDataDomeSolution(['captchaId' => $id, 'code' => $solver->getResult($id)]);
+
+        $this->assertSame(MockServer::DATADOME_COOKIE, $result['code']);
+        $this->assertSame(explode(';', MockServer::DATADOME_COOKIE)[0], $result['cookie']);
+    }
+
+    public function testDataDomeBannedBlockPageIsRefusedLocally(): void
+    {
+        $this->expectException(ValidationException::class);
+
+        $this->makeSolver()->dataDome(str_replace('t=fe', 't=bv', self::DD_CAPTCHA_URL), self::DD_PAGE);
+    }
 }

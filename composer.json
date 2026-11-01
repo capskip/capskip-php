@@ -21,6 +21,8 @@
         "cloudflare-turnstile",
         "geetest",
         "geetest-solver",
+        "datadome",
+        "datadome-captcha",
         "image-captcha",
         "ocr",
         "2captcha-alternative",
