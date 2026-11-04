@@ -516,4 +516,66 @@ class IntegrationTest extends TestCase
 
         $this->makeSolver()->dataDome(str_replace('t=fe', 't=bv', self::DD_CAPTCHA_URL), self::DD_PAGE);
     }
+
+    // -- hCaptcha -----------------------------------------------------------
+
+    private const HC_SITEKEY = 'a5f74b19-9e45-40e0-b45d-47ff91b7a6c2';
+    private const HC_PAGE = 'https://accounts.hcaptcha.com/demo';
+    private const HC_RQDATA = 'Wk2qT7bX+fV9rL0pZ3mN8cJ1hYsD6uE4gA5oR2iK/0=';
+
+    public function testHCaptcha(): void
+    {
+        $result = $this->makeSolver()->hcaptcha(self::HC_SITEKEY, self::HC_PAGE);
+
+        $this->assertNotEmpty($result['captchaId']);
+        $this->assertSame(MockServer::HCAPTCHA_TOKEN, $result['code']);
+        $this->assertSame(MockServer::HCAPTCHA_TOKEN, $result['token']);
+        $this->assertSame(MockServer::HCAPTCHA_RESP_KEY, $result['respKey']);
+        $this->assertSame(MockServer::HCAPTCHA_USER_AGENT, $result['userAgent']);
+
+        $sent = $this->lastSubmit();
+        $this->assertSame('hcaptcha', $sent['method']);
+        $this->assertSame(self::HC_SITEKEY, $sent['sitekey']);
+        $this->assertSame(self::HC_PAGE, $sent['pageurl']);
+        $this->assertArrayNotHasKey('invisible', $sent);
+    }
+
+    public function testHCaptchaWithEveryOption(): void
+    {
+        // invisible => true has to cross the wire as 1: the mock, like CapSkip,
+        // refuses anything else. rqdata carries + and /, which must survive.
+        $result = $this->makeSolver()->hcaptcha(self::HC_SITEKEY, self::HC_PAGE, [
+            'invisible' => true,
+            'data' => self::HC_RQDATA,
+            'userAgent' => 'Mozilla/5.0 (caller)',
+            'proxy' => ['type' => 'SOCKS5H', 'uri' => 'login:p%40ss@203.0.113.7:1080'],
+        ]);
+
+        $this->assertSame(MockServer::HCAPTCHA_TOKEN, $result['token']);
+        $this->assertSame(MockServer::HCAPTCHA_RESP_KEY, $result['respKey']);
+
+        $sent = $this->lastSubmit();
+        $this->assertSame('1', $sent['invisible']);
+        $this->assertSame(self::HC_RQDATA, $sent['data']);
+        $this->assertSame('Mozilla/5.0 (caller)', $sent['useragent']);
+        $this->assertSame('login:p%40ss@203.0.113.7:1080', $sent['proxy']);
+        $this->assertSame('SOCKS5H', $sent['proxytype']);
+    }
+
+    public function testHCaptchaInvisibleOffIsNotSent(): void
+    {
+        // A PHP false would otherwise reach the form body as "0", which the
+        // mock refuses just as a wrongly stringified bool would be misread.
+        $result = $this->makeSolver()->hcaptcha(self::HC_SITEKEY, self::HC_PAGE, ['invisible' => false]);
+
+        $this->assertSame(MockServer::HCAPTCHA_TOKEN, $result['token']);
+        $this->assertArrayNotHasKey('invisible', $this->lastSubmit());
+    }
+
+    public function testHCaptchaBadPageurlIsRefusedLocally(): void
+    {
+        $this->expectException(ValidationException::class);
+
+        $this->makeSolver()->hcaptcha(self::HC_SITEKEY, 'accounts.hcaptcha.com/demo');
+    }
 }

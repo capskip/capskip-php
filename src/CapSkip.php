@@ -13,12 +13,12 @@ use CapSkip\Exceptions\ValidationException;
 /**
  * Client for the CapSkip local captcha solver (image, reCAPTCHA, Turnstile,
  * GeeTest v3, ALTCHA, Capy Puzzle, CaptchaFox, Friendly Captcha, AWS WAF,
- * DataDome).
+ * DataDome, hCaptcha).
  */
 class CapSkip
 {
     /** Installed SDK version. */
-    public const VERSION = '1.5.0';
+    public const VERSION = '1.6.0';
 
     /**
      * First poll fires this soon after submitting (in seconds), then the interval
@@ -453,6 +453,70 @@ class CapSkip
     }
 
     /**
+     * Solve an hCaptcha widget and return its token.
+     *
+     * The arguments follow 2Captcha's `hcaptcha(sitekey, pageurl, ...)`, with the
+     * optional ones passed in `$options`:
+     *
+     *  * `$sitekey` is the widget's `data-sitekey` (or the `sitekey` option of
+     *    `hcaptcha.render()`).
+     *  * `$url` is the full address of the page the widget is on. `pageurl` in
+     *    `$options` is accepted in its place.
+     *  * `invisible` -- `1` (or `true`) for a `data-size="invisible"` widget.
+     *  * `data` -- the `rqdata` value an hCaptcha Enterprise site passes to
+     *    `hcaptcha.setData()`. It is single use and expires quickly, so fetch a
+     *    fresh one for every task.
+     *  * `userAgent` -- the User-Agent you will submit the form with. CapSkip
+     *    uses it only when it matches the browser it solves with.
+     *  * `proxy` -- a URI string or
+     *    `['type' => 'HTTP', 'uri' => 'login:password@IP:PORT']`.
+     *
+     * hCaptcha Enterprise and invisible widgets use this same method.
+     *
+     * The result carries the token as both `code` and `token` (for the
+     * `h-captcha-response` and `g-recaptcha-response` fields), `respKey` (the
+     * second value hCaptcha hands the widget; most sites never read it, and it
+     * can be empty), and `userAgent`, the User-Agent the token was earned with.
+     * Submit the token with that User-Agent, soon: hCaptcha tokens are single
+     * use and expire about two minutes after they are issued.
+     *
+     * @param array<string, mixed> $options `invisible`, `data`, `userAgent`,
+     *                                       `proxy`, `timeout`, ...
+     *
+     * @return array<string, mixed>
+     */
+    public function hcaptcha(string $sitekey, string $url, array $options = []): array
+    {
+        // An empty positional is left out rather than sent, so `pageurl` in
+        // $options can stand in for `$url` without tripping the alias conflict
+        // check -- and a value missing from both is still refused.
+        $base = ['timeout' => $this->recaptchaTimeout];
+        if ($sitekey !== '') {
+            $base['sitekey'] = $sitekey;
+        }
+        if ($url !== '') {
+            $base['url'] = $url;
+        }
+
+        $given = [];
+        foreach ($options as $key => $value) {
+            if ($value !== null) {
+                $given[$key] = $value;
+            }
+        }
+
+        // A real browser session, like reCAPTCHA, so it gets the longer of the
+        // two timeouts unless the caller asked for a specific one.
+        $result = $this->solve(array_merge(
+            $base,
+            $given,
+            ['method' => 'hcaptcha', 'poll_json' => 1]
+        ));
+
+        return self::applyHCaptchaSolution($result);
+    }
+
+    /**
      * Submit then poll to completion. Used by the higher-level solve methods.
      *
      * @param array<string, mixed> $options Submit params plus optional `timeout`,
@@ -776,6 +840,27 @@ class CapSkip
     }
 
     /**
+     * Expose the hCaptcha token as `token`, next to its `respKey`.
+     *
+     * `code` keeps the token as the server sent it and `token` is the same
+     * string, for the `h-captcha-response` field. `respKey` is always present,
+     * empty when the widget handed out none, so callers can read it without a
+     * key check.
+     *
+     * @param array<string, mixed> $result
+     *
+     * @return array<string, mixed>
+     */
+    public static function applyHCaptchaSolution(array $result): array
+    {
+        $result = self::applyTokenSolution($result);
+        $respKey = $result['respKey'] ?? null;
+        $result['respKey'] = is_string($respKey) ? $respKey : '';
+
+        return $result;
+    }
+
+    /**
      * Copy `$fields` out of an answer that is an object rather than a token.
      *
      * The object is read from the createTask-shaped `solution` when the poll
@@ -903,6 +988,11 @@ class CapSkip
             if ($proxy) {
                 $result['proxy'] = $proxy;
             }
+            // hCaptcha hands the widget a second value next to the token. It is
+            // carried even when empty, which is how the server reports "none".
+            if (array_key_exists('respKey', $polled)) {
+                $result['respKey'] = $polled['respKey'];
+            }
             // ALTCHA's createTask-shaped `solution` object. Carried through so
             // applyAltchaSolution can read the counter the server already worked
             // out, which is the only reliable source for a proof-of-work v2
@@ -954,6 +1044,9 @@ class CapSkip
         }
         if ($method === 'datadome') {
             return ApiParams::prepareSubmitParams($params, 'datadome');
+        }
+        if ($method === 'hcaptcha') {
+            return ApiParams::prepareSubmitParams($params, 'hcaptcha');
         }
 
         return ApiParams::applyProxy(ApiParams::applyParamAliases($params));

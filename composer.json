@@ -23,6 +23,8 @@
         "geetest-solver",
         "datadome",
         "datadome-captcha",
+        "hcaptcha",
+        "hcaptcha-solver",
         "image-captcha",
         "ocr",
         "2captcha-alternative",

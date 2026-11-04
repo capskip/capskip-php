@@ -81,6 +81,12 @@ final class ApiParams
     private const AMAZON_WAF_SCRIPT_PATH = '~^(/[A-Za-z0-9_-]+)+/(challenge|captcha|jsapi)\.js$~';
 
     /** @var array<int, string> */
+    public const HCAPTCHA_SUBMIT = [
+        'method', 'sitekey', 'pageurl', 'invisible', 'data', 'useragent', 'json',
+        'proxy', 'proxytype',
+    ];
+
+    /** @var array<int, string> */
     public const DATADOME_SUBMIT = [
         'method', 'captcha_url', 'pageurl', 'useragent', 'json', 'proxy', 'proxytype',
     ];
@@ -718,6 +724,106 @@ final class ApiParams
     }
 
     /**
+     * Drop unset optionals and send `invisible` as the 1 the server reads.
+     *
+     * The server reads "1" or "true" as an invisible widget and defaults to
+     * visible. A PHP bool would reach the form body as "1" or "0" and a string
+     * as typed, so every accepted spelling is settled here: on is sent as 1,
+     * off is not sent at all, and anything else is refused.
+     *
+     * @param array<string, mixed> $params
+     *
+     * @return array<string, mixed>
+     */
+    public static function normalizeHCaptchaSubmit(array $params): array
+    {
+        $params = array_filter(
+            self::dropUnset($params),
+            static fn ($value) => $value !== ''
+        );
+
+        if (array_key_exists('invisible', $params)) {
+            $on = self::hCaptchaInvisible($params['invisible']);
+            if ($on === null) {
+                $raw = $params['invisible'];
+                $shown = is_scalar($raw) ? var_export($raw, true) : gettype($raw);
+                throw new ValidationException(
+                    "invisible must be 0 or 1 (or a bool) for hCaptcha, not {$shown}."
+                );
+            }
+            if ($on) {
+                $params['invisible'] = 1;
+            } else {
+                unset($params['invisible']);
+            }
+        }
+
+        return $params;
+    }
+
+    /**
+     * True / false for an accepted `invisible` value, null for anything else.
+     *
+     * @param mixed $value
+     */
+    private static function hCaptchaInvisible($value): ?bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+        if (is_int($value)) {
+            return $value === 1 ? true : ($value === 0 ? false : null);
+        }
+        if (is_string($value)) {
+            $text = strtolower($value);
+            if ($text === '1' || $text === 'true') {
+                return true;
+            }
+            if ($text === '0' || $text === 'false') {
+                return false;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param array<string, mixed> $params
+     */
+    public static function validateHCaptchaSubmit(array $params): void
+    {
+        // The server answers ERROR_RECAPTCHA_INVALID_SITEKEY for a missing
+        // sitekey and ERROR_PAGEURL for a page URL that is missing or not
+        // http(s). Fail locally so neither costs a round-trip.
+        $sitekey = $params['sitekey'] ?? null;
+        if (!is_scalar($sitekey) || trim((string) $sitekey) === '') {
+            throw new ValidationException("'sitekey' is required for hCaptcha.");
+        }
+
+        $rawPageurl = $params['pageurl'] ?? null;
+        $pageurl = is_scalar($rawPageurl) ? trim((string) $rawPageurl) : '';
+        if ($pageurl === '') {
+            throw new ValidationException("'pageurl' is required for hCaptcha.");
+        }
+        $page = parse_url($pageurl);
+        if (!is_array($page)
+            || !in_array(strtolower((string) ($page['scheme'] ?? '')), ['http', 'https'], true)
+            || (string) ($page['host'] ?? '') === ''
+        ) {
+            throw new ValidationException(
+                "'pageurl' must be an absolute http or https URL for hCaptcha, got '{$pageurl}'."
+            );
+        }
+
+        $unknown = self::unknownKeys($params, self::HCAPTCHA_SUBMIT);
+        if (!empty($unknown)) {
+            throw new ValidationException(
+                'Unsupported parameters for hCaptcha: ' . self::reprList($unknown) . '.'
+            );
+        }
+    }
+
+    /**
      * Apply aliases + proxy normalization, then validate for the captcha type.
      *
      * @param array<string, mixed> $params
@@ -765,6 +871,9 @@ final class ApiParams
                 static fn ($value) => $value !== ''
             );
             self::validateDataDomeSubmit($params);
+        } elseif ($captchaType === 'hcaptcha') {
+            $params = self::normalizeHCaptchaSubmit($params);
+            self::validateHCaptchaSubmit($params);
         }
 
         // Skipped for 'normal', which rejects proxy outright with a clearer message.
