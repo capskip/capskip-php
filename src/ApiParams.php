@@ -87,6 +87,19 @@ final class ApiParams
     ];
 
     /** @var array<int, string> */
+    public const MTCAPTCHA_SUBMIT = [
+        'method', 'sitekey', 'pageurl', 'action', 'useragent', 'json',
+        'proxy', 'proxytype',
+    ];
+
+    /**
+     * The server's sitekey test: MTPublic- then 1-55 letters, digits, '-' or
+     * '_' (64 characters at most). Anything else is answered
+     * ERROR_BAD_PARAMETERS.
+     */
+    private const MTCAPTCHA_SITEKEY = '~^MTPublic-[A-Za-z0-9_-]{1,55}$~D';
+
+    /** @var array<int, string> */
     public const DATADOME_SUBMIT = [
         'method', 'captcha_url', 'pageurl', 'useragent', 'json', 'proxy', 'proxytype',
     ];
@@ -824,6 +837,79 @@ final class ApiParams
     }
 
     /**
+     * Drop unset and empty optionals and normalize the sitekey as the server does.
+     *
+     * MTCaptcha's own `getchallenge` request names the key `sk=MTPublic-...`,
+     * and callers copy it from there; the server strips that prefix (in any
+     * case) and surrounding whitespace, so the SDK does the same and sends the
+     * bare key.
+     *
+     * @param array<string, mixed> $params
+     *
+     * @return array<string, mixed>
+     */
+    public static function normalizeMtCaptchaSubmit(array $params): array
+    {
+        $params = array_filter(
+            self::dropUnset($params),
+            static fn ($value) => $value !== ''
+        );
+
+        if (isset($params['sitekey']) && is_string($params['sitekey'])) {
+            $sitekey = trim($params['sitekey']);
+            if (strtolower(substr($sitekey, 0, 3)) === 'sk=') {
+                $sitekey = trim(substr($sitekey, 3));
+            }
+            $params['sitekey'] = $sitekey;
+        }
+
+        return $params;
+    }
+
+    /**
+     * @param array<string, mixed> $params
+     */
+    public static function validateMtCaptchaSubmit(array $params): void
+    {
+        // The server answers ERROR_BAD_PARAMETERS for a missing or malformed
+        // sitekey and ERROR_PAGEURL for a page URL that is missing or not
+        // http(s). Fail locally so neither costs a round-trip.
+        $sitekey = $params['sitekey'] ?? null;
+        if ($sitekey === null || $sitekey === '') {
+            throw new ValidationException("'sitekey' is required for MTCaptcha.");
+        }
+        if (!is_string($sitekey) || preg_match(self::MTCAPTCHA_SITEKEY, $sitekey) !== 1) {
+            $shown = is_scalar($sitekey) ? var_export($sitekey, true) : gettype($sitekey);
+            throw new ValidationException(
+                "{$shown} is not an MTCaptcha sitekey. It starts with MTPublic- "
+                . "followed by letters, digits, '-' or '_' (64 characters at most)."
+            );
+        }
+
+        $rawPageurl = $params['pageurl'] ?? null;
+        $pageurl = is_scalar($rawPageurl) ? trim((string) $rawPageurl) : '';
+        if ($pageurl === '') {
+            throw new ValidationException("'pageurl' is required for MTCaptcha.");
+        }
+        $page = parse_url($pageurl);
+        if (!is_array($page)
+            || !in_array(strtolower((string) ($page['scheme'] ?? '')), ['http', 'https'], true)
+            || (string) ($page['host'] ?? '') === ''
+        ) {
+            throw new ValidationException(
+                "'pageurl' must be an absolute http or https URL for MTCaptcha, got '{$pageurl}'."
+            );
+        }
+
+        $unknown = self::unknownKeys($params, self::MTCAPTCHA_SUBMIT);
+        if (!empty($unknown)) {
+            throw new ValidationException(
+                'Unsupported parameters for MTCaptcha: ' . self::reprList($unknown) . '.'
+            );
+        }
+    }
+
+    /**
      * Apply aliases + proxy normalization, then validate for the captcha type.
      *
      * @param array<string, mixed> $params
@@ -874,6 +960,9 @@ final class ApiParams
         } elseif ($captchaType === 'hcaptcha') {
             $params = self::normalizeHCaptchaSubmit($params);
             self::validateHCaptchaSubmit($params);
+        } elseif ($captchaType === 'mtcaptcha') {
+            $params = self::normalizeMtCaptchaSubmit($params);
+            self::validateMtCaptchaSubmit($params);
         }
 
         // Skipped for 'normal', which rejects proxy outright with a clearer message.

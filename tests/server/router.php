@@ -58,6 +58,11 @@ const MOCK_HCAPTCHA_TOKEN = 'P1_eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.hadwYXNza2V
 const MOCK_HCAPTCHA_RESP_KEY = 'E0_eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpZCI6IjA09wB1';
 const MOCK_HCAPTCHA_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36';
 
+// MTCaptcha, as CapSkip's res.php answers it: the verified token MTCaptcha
+// issued, v1( then comma-separated parts (the sitekey among them) and a
+// base64url payload, closed by **). Nothing else rides with it.
+const MOCK_MTCAPTCHA_TOKEN = 'v1(0f3c9e2a,7b1d4c88,MTPublic-KzqLY1cKH,5e0c2a9f61d84b37a0c1e9b2d6f4a873,Qm9ndXNUb2tlbkZvclRlc3RzT25seV9fTm90QVJlYWxNVENhcHRjaGFUb2tlbi1BYkNkRWZHaA**)';
+
 // A minimal valid 1x1 PNG. The SDK never inspects the bytes, so exact pixels do
 // not matter — the mock just needs to return something for /image.png.
 const MOCK_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
@@ -193,6 +198,16 @@ if ($method === 'GET' && $path === '/res.php') {
             header('X-HCaptcha-User-Agent: ' . MOCK_HCAPTCHA_USER_AGENT);
             $sendText('OK|' . MOCK_HCAPTCHA_TOKEN);
         }
+    } elseif (in_array($state['idType'][$cid] ?? '', ['mt_captcha', 'mtcaptcha'], true)) {
+        // The bare status/request pair: the token and nothing else.
+        if ($wantJson) {
+            $sendText((string) json_encode([
+                'status' => 1,
+                'request' => MOCK_MTCAPTCHA_TOKEN,
+            ]), 'application/json');
+        } else {
+            $sendText('OK|' . MOCK_MTCAPTCHA_TOKEN);
+        }
     } elseif (($state['idType'][$cid] ?? '') === 'captchafox') {
         // The UA is the browser's own, and CapSkip reports it at the top level
         // and inside solution both.
@@ -244,6 +259,15 @@ if ($method === 'POST' && $path === '/in.php') {
     // test catches the slip.
     if ($submitMethod === 'hcaptcha' && array_key_exists('invisible', $_POST)
         && !in_array((string) $_POST['invisible'], ['1', 'true'], true)
+    ) {
+        $sendText('ERROR_BAD_PARAMETERS');
+        exit;
+    }
+
+    // CapSkip's own sitekey test for MTCaptcha. The SDK refuses a bad one
+    // first, so reaching here with one means local validation slipped.
+    if (in_array($submitMethod, ['mt_captcha', 'mtcaptcha'], true)
+        && preg_match('~^MTPublic-[A-Za-z0-9_-]{1,55}$~D', (string) ($_POST['sitekey'] ?? '')) !== 1
     ) {
         $sendText('ERROR_BAD_PARAMETERS');
         exit;

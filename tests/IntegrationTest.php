@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace CapSkip\Tests;
 
 use CapSkip\ApiClient;
+use CapSkip\AsyncCapSkip;
 use CapSkip\CapSkip;
 use CapSkip\Exceptions\ApiException;
 use CapSkip\Exceptions\NetworkException;
@@ -577,5 +578,75 @@ class IntegrationTest extends TestCase
         $this->expectException(ValidationException::class);
 
         $this->makeSolver()->hcaptcha(self::HC_SITEKEY, 'accounts.hcaptcha.com/demo');
+    }
+
+    // -- MTCaptcha ----------------------------------------------------------
+
+    private const MT_SITEKEY = 'MTPublic-KzqLY1cKH';
+    private const MT_PAGE = 'https://2captcha.com/demo/mtcaptcha';
+
+    public function testMtCaptcha(): void
+    {
+        $result = $this->makeSolver()->mtcaptcha(self::MT_SITEKEY, self::MT_PAGE);
+
+        $this->assertNotEmpty($result['captchaId']);
+        $this->assertSame(MockServer::MTCAPTCHA_TOKEN, $result['code']);
+        $this->assertSame(MockServer::MTCAPTCHA_TOKEN, $result['token']);
+
+        $sent = $this->lastSubmit();
+        $this->assertSame('mt_captcha', $sent['method']);
+        $this->assertSame(self::MT_SITEKEY, $sent['sitekey']);
+        $this->assertSame(self::MT_PAGE, $sent['pageurl']);
+    }
+
+    public function testMtCaptchaWithEveryOption(): void
+    {
+        // The sk= prefix has to be stripped before it reaches the mock, which,
+        // like CapSkip, refuses a key that does not match MTPublic-...
+        $result = $this->makeSolver()->mtcaptcha('sk=' . self::MT_SITEKEY, self::MT_PAGE, [
+            'action' => 'login',
+            'userAgent' => 'Mozilla/5.0 (caller)',
+            'proxy' => ['type' => 'SOCKS5H', 'uri' => 'login:p%40ss@203.0.113.7:1080'],
+        ]);
+
+        $this->assertSame(MockServer::MTCAPTCHA_TOKEN, $result['token']);
+
+        $sent = $this->lastSubmit();
+        $this->assertSame(self::MT_SITEKEY, $sent['sitekey']);
+        $this->assertSame('login', $sent['action']);
+        $this->assertSame('Mozilla/5.0 (caller)', $sent['useragent']);
+        $this->assertSame('login:p%40ss@203.0.113.7:1080', $sent['proxy']);
+        $this->assertSame('SOCKS5H', $sent['proxytype']);
+    }
+
+    public function testMtCaptchaBadSitekeyIsRefusedLocally(): void
+    {
+        $this->expectException(ValidationException::class);
+
+        $this->makeSolver()->mtcaptcha('KzqLY1cKH', self::MT_PAGE);
+    }
+
+    public function testMtCaptchaSocks4IsRefusedLocally(): void
+    {
+        $this->expectException(ValidationException::class);
+
+        $this->makeSolver()->mtcaptcha(self::MT_SITEKEY, self::MT_PAGE, [
+            'proxy' => ['type' => 'SOCKS4', 'uri' => '203.0.113.7:1080'],
+        ]);
+    }
+
+    public function testAsyncMtCaptcha(): void
+    {
+        $solver = new AsyncCapSkip([
+            'apiKey' => 'capskip',
+            'host' => self::$server->host,
+            'port' => self::$server->port,
+            'pollingInterval' => 1,
+        ]);
+
+        $result = $solver->mtcaptcha(self::MT_SITEKEY, self::MT_PAGE, ['action' => 'login']);
+
+        $this->assertSame(MockServer::MTCAPTCHA_TOKEN, $result['code']);
+        $this->assertSame(MockServer::MTCAPTCHA_TOKEN, $result['token']);
     }
 }

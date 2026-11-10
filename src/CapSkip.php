@@ -13,12 +13,12 @@ use CapSkip\Exceptions\ValidationException;
 /**
  * Client for the CapSkip local captcha solver (image, reCAPTCHA, Turnstile,
  * GeeTest v3, ALTCHA, Capy Puzzle, CaptchaFox, Friendly Captcha, AWS WAF,
- * DataDome, hCaptcha).
+ * DataDome, hCaptcha, MTCaptcha).
  */
 class CapSkip
 {
     /** Installed SDK version. */
-    public const VERSION = '1.6.0';
+    public const VERSION = '1.7.0';
 
     /**
      * First poll fires this soon after submitting (in seconds), then the interval
@@ -514,6 +514,63 @@ class CapSkip
         ));
 
         return self::applyHCaptchaSolution($result);
+    }
+
+    /**
+     * Solve an MTCaptcha text captcha and return its token.
+     *
+     * The arguments follow 2Captcha's `mtcaptcha(sitekey, url, ...)`, with the
+     * optional ones passed in `$options`:
+     *
+     *  * `$sitekey` is the widget's sitekey, `MTPublic-` followed by letters,
+     *    digits, `-` or `_`. It is in the page's `mtcaptchaConfig` object, or in
+     *    the `sitekey` query parameter of the widget's iframe. An `sk=` prefix,
+     *    as MTCaptcha's own `getchallenge` request writes it, is stripped.
+     *  * `$url` is the full address of the page the widget is on. MTCaptcha
+     *    issues tokens only for the domains the sitekey is registered for.
+     *    `pageurl` in `$options` is accepted in its place.
+     *  * `action` -- the `action` the page sets in `mtcaptchaConfig`, if any.
+     *  * `userAgent` -- the User-Agent to present to MTCaptcha.
+     *  * `proxy` -- a URI string or
+     *    `['type' => 'HTTP', 'uri' => 'login:password@IP:PORT']`.
+     *
+     * The result carries the token, `v1(...)`, as both `code` and `token`, for
+     * the form's `mtcaptcha-verifiedtoken` field.
+     *
+     * @param array<string, mixed> $options `action`, `userAgent`, `proxy`,
+     *                                       `timeout`, ...
+     *
+     * @return array<string, mixed>
+     */
+    public function mtcaptcha(string $sitekey, string $url, array $options = []): array
+    {
+        // An empty positional is left out rather than sent, so `pageurl` in
+        // $options can stand in for `$url` without tripping the alias conflict
+        // check -- and a value missing from both is still refused.
+        $base = [];
+        if ($sitekey !== '') {
+            $base['sitekey'] = $sitekey;
+        }
+        if ($url !== '') {
+            $base['url'] = $url;
+        }
+
+        $given = [];
+        foreach ($options as $key => $value) {
+            if ($value !== null) {
+                $given[$key] = $value;
+            }
+        }
+
+        // No browser: CapSkip fetches the challenge and reads the text itself,
+        // so it keeps the default timeout like ALTCHA and Capy.
+        $result = $this->solve(array_merge(
+            $base,
+            $given,
+            ['method' => 'mt_captcha', 'poll_json' => 1]
+        ));
+
+        return self::applyTokenSolution($result);
     }
 
     /**
@@ -1047,6 +1104,9 @@ class CapSkip
         }
         if ($method === 'hcaptcha') {
             return ApiParams::prepareSubmitParams($params, 'hcaptcha');
+        }
+        if ($method === 'mt_captcha' || $method === 'mtcaptcha') {
+            return ApiParams::prepareSubmitParams($params, 'mtcaptcha');
         }
 
         return ApiParams::applyProxy(ApiParams::applyParamAliases($params));

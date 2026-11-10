@@ -25,6 +25,8 @@
         "datadome-captcha",
         "hcaptcha",
         "hcaptcha-solver",
+        "mtcaptcha",
+        "mtcaptcha-solver",
         "image-captcha",
         "ocr",
         "2captcha-alternative",
