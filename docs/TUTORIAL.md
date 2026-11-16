@@ -507,6 +507,8 @@ curl_close($ch);
 | reCAPTCHA | `recaptcha(string $sitekey, string $url, array $options = [])` |
 | Turnstile | `turnstile(string $sitekey, string $url, array $options = [])` |
 | GeeTest v3 | `geetest(string $gt, string $challenge, string $url, array $options = [])` |
+| GeeTest v4 | `geetestV4(string $captchaId, string $url, array $options = [])` |
+| Yandex SmartCaptcha | `yandexSmart(string $sitekey, string $url, array $options = [])` |
 | Manual submit | `send(array $params): string` |
 | Manual poll | `getResult(string $id, int $json = 0)` |
 
@@ -524,6 +526,8 @@ The SDK accepts friendly names and converts them to the raw API parameters:
 | `score`, `minScore` | `min_score` |
 | `datas`, `data_s` | `data-s` |
 | `apiServer`, `api_subdomain` | `api_server` |
+| `captchaId` | `captcha_id` |
+| `riskType` | `risk_type` |
 | `proxy` (array) | `proxy` + `proxytype` strings |
 
 Anything CapSkip does not document for a given captcha type is rejected with

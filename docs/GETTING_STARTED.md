@@ -138,6 +138,8 @@ php examples/recaptcha.php
 | `recaptcha.php` | reCAPTCHA v2 |
 | `turnstile.php` | Cloudflare Turnstile widget |
 | `geetest.php` | GeeTest v3 slider, including fetching a fresh `gt`/`challenge` pair |
+| `geetest_v4.php` | GeeTest v4, from the `captcha_id` alone |
+| `yandex_smart.php` | Yandex SmartCaptcha token |
 | `async_example.php` | Solving several captcha types in a row |
 | `verify_connection.php` | Check CapSkip is running |
 

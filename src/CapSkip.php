@@ -12,13 +12,13 @@ use CapSkip\Exceptions\ValidationException;
 
 /**
  * Client for the CapSkip local captcha solver (image, reCAPTCHA, Turnstile,
- * GeeTest v3, ALTCHA, Capy Puzzle, CaptchaFox, Friendly Captcha, AWS WAF,
- * DataDome, hCaptcha, MTCaptcha).
+ * GeeTest v3 and v4, ALTCHA, Capy Puzzle, CaptchaFox, Friendly Captcha, AWS WAF,
+ * DataDome, hCaptcha, MTCaptcha, Yandex SmartCaptcha).
  */
 class CapSkip
 {
     /** Installed SDK version. */
-    public const VERSION = '1.7.0';
+    public const VERSION = '1.8.0';
 
     /**
      * First poll fires this soon after submitting (in seconds), then the interval
@@ -153,6 +153,65 @@ class CapSkip
         ));
 
         return self::applyGeetestSolution($result);
+    }
+
+    /**
+     * Solve a GeeTest v4 captcha.
+     *
+     * The arguments follow 2Captcha's `geetest_v4(captcha_id, url, ...)`, with
+     * the optional ones passed in `$options`:
+     *
+     *  * `$captchaId` is the widget's ID, passed to `initGeetest4` as
+     *    `captchaId`. It is the same for every visitor, so read it once.
+     *    `captchaId` or `captcha_id` in `$options` is accepted in its place.
+     *  * `$url` is the full address of the page the widget is on. `pageurl` in
+     *    `$options` is accepted in its place.
+     *  * `risk_type` / `riskType` -- the challenge type to ask GeeTest for
+     *    (`slide`, `icon`, `nine`, `word`, `phrase`, `match`, `winlinze`,
+     *    `svg_seed`, `svg_icon` or `ai`). GeeTest applies it only where the site
+     *    allows it.
+     *  * `proxy` -- a URI string or
+     *    `['type' => 'HTTP', 'uri' => 'login:password@IP:PORT']`.
+     *
+     * The result carries the raw answer as `code` (a JSON string) plus the
+     * parsed `captcha_id`, `lot_number`, `pass_token`, `gen_time` and
+     * `captcha_output`, the five values to post back to the target site, and
+     * `isOffline` when GeeTest passed the widget in offline mode.
+     *
+     * @param array<string, mixed> $options `risk_type`, `proxy`, `timeout`, ...
+     *
+     * @return array<string, mixed>
+     */
+    public function geetestV4(string $captchaId, string $url, array $options = []): array
+    {
+        // An empty positional is left out rather than sent, so `captchaId` or
+        // `pageurl` in $options can stand in for it without tripping the alias
+        // conflict check -- and a value missing from both is still refused.
+        $base = [];
+        if ($captchaId !== '') {
+            $base['captcha_id'] = $captchaId;
+        }
+        if ($url !== '') {
+            $base['url'] = $url;
+        }
+
+        $given = [];
+        foreach ($options as $key => $value) {
+            if ($value !== null) {
+                $given[$key] = $value;
+            }
+        }
+
+        // A real browser solve, like v3, so it gets the longer of the two
+        // timeouts unless the caller asked for a specific one.
+        $result = $this->solve(array_merge(
+            ['timeout' => $this->recaptchaTimeout],
+            $base,
+            $given,
+            ['method' => 'geetest_v4', 'poll_json' => 1]
+        ));
+
+        return self::applyGeetestV4Solution($result);
     }
 
     /**
@@ -574,6 +633,56 @@ class CapSkip
     }
 
     /**
+     * Solve a Yandex SmartCaptcha and return its token.
+     *
+     * The arguments follow 2Captcha's `yandex_smart(sitekey, url, ...)`, with
+     * the optional ones passed in `$options`:
+     *
+     *  * `$sitekey` is the widget's `data-sitekey`, usually starting `ysc1_`.
+     *  * `$url` is the full address of the page the widget is on. Yandex checks
+     *    the sitekey against that domain. `pageurl` in `$options` is accepted
+     *    in its place.
+     *  * `userAgent` -- the User-Agent to present to Yandex.
+     *  * `proxy` -- a URI string or
+     *    `['type' => 'HTTP', 'uri' => 'login:password@IP:PORT']`.
+     *
+     * The result carries the token as both `code` and `token`, for the form's
+     * `smart-token` field. A token is valid for five minutes and checks once.
+     *
+     * @param array<string, mixed> $options `userAgent`, `proxy`, `timeout`, ...
+     *
+     * @return array<string, mixed>
+     */
+    public function yandexSmart(string $sitekey, string $url, array $options = []): array
+    {
+        $base = [];
+        if ($sitekey !== '') {
+            $base['sitekey'] = $sitekey;
+        }
+        if ($url !== '') {
+            $base['url'] = $url;
+        }
+
+        $given = [];
+        foreach ($options as $key => $value) {
+            if ($value !== null) {
+                $given[$key] = $value;
+            }
+        }
+
+        // The widget runs in a real browser and may ask for several rounds of
+        // challenges, so it gets the longer of the two timeouts.
+        $result = $this->solve(array_merge(
+            ['timeout' => $this->recaptchaTimeout],
+            $base,
+            $given,
+            ['method' => 'yandex', 'poll_json' => 1]
+        ));
+
+        return self::applyTokenSolution($result);
+    }
+
+    /**
      * Submit then poll to completion. Used by the higher-level solve methods.
      *
      * @param array<string, mixed> $options Submit params plus optional `timeout`,
@@ -790,6 +899,29 @@ class CapSkip
         }
 
         return $result;
+    }
+
+    /**
+     * A GeeTest v4 answer is five values the site verifies with GeeTest
+     * together, under these same names: expand them into `captcha_id`,
+     * `lot_number`, `pass_token`, `gen_time` and `captcha_output`. `isOffline`
+     * rides along only when GeeTest could not be reached and its widget passed
+     * without a challenge; the site decides whether to accept such a pass.
+     *
+     * `code` keeps the raw answer -- the JSON string the server sends in
+     * `request` -- so callers that forward it verbatim keep working. If it does
+     * not parse, the result is returned untouched rather than masking the
+     * server's reply.
+     *
+     * @param array<string, mixed> $result
+     *
+     * @return array<string, mixed>
+     */
+    public static function applyGeetestV4Solution(array $result): array
+    {
+        return self::expandObjectAnswer($result, [
+            'captcha_id', 'lot_number', 'pass_token', 'gen_time', 'captcha_output', 'isOffline',
+        ]);
     }
 
     /**
@@ -1107,6 +1239,12 @@ class CapSkip
         }
         if ($method === 'mt_captcha' || $method === 'mtcaptcha') {
             return ApiParams::prepareSubmitParams($params, 'mtcaptcha');
+        }
+        if ($method === 'geetest_v4') {
+            return ApiParams::prepareSubmitParams($params, 'geetest_v4');
+        }
+        if ($method === 'yandex') {
+            return ApiParams::prepareSubmitParams($params, 'yandex');
         }
 
         return ApiParams::applyProxy(ApiParams::applyParamAliases($params));

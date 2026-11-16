@@ -5,6 +5,34 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] - 2026-11-16
+
+### Added
+
+- **GeeTest v4 support** via
+  `geetestV4(string $captchaId, string $url, array $options = [])` on `CapSkip`
+  (and so on `AsyncCapSkip`), following 2Captcha's signature. It sends
+  `method=geetest_v4`. Optional: `risk_type` / `riskType` and `proxy`;
+  `captchaId` is accepted for `$captchaId` and `pageurl` for `$url`.
+- The GeeTest v4 result expands the five values the site verifies,
+  `captcha_id`, `lot_number`, `pass_token`, `gen_time` and `captcha_output`,
+  plus `isOffline` on an offline pass. `code` keeps the raw JSON string.
+- **Yandex SmartCaptcha support** via
+  `yandexSmart(string $sitekey, string $url, array $options = [])` on `CapSkip`
+  (and so on `AsyncCapSkip`), following 2Captcha's signature. It sends
+  `method=yandex`. Optional: `userAgent` / `useragent` and `proxy`. The result
+  carries the token as both `code` and `token`, for the form's `smart-token`
+  field.
+
+### Notes
+
+- Refused locally, before a round-trip: for GeeTest v4, a missing `captcha_id`,
+  a page URL that is missing or not an absolute http(s) address, and v3's
+  parameters or any other the API does not take; for Yandex SmartCaptcha, a
+  sitekey that is not 16 to 120 letters, digits, `_` or `-`, the same page URL
+  test, and any parameter the API does not take.
+- Both take `recaptchaTimeout`: each is passed in a real browser.
+
 ## [1.7.0] - 2026-11-10
 
 ### Added

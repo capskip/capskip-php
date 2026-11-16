@@ -649,4 +649,150 @@ class IntegrationTest extends TestCase
         $this->assertSame(MockServer::MTCAPTCHA_TOKEN, $result['code']);
         $this->assertSame(MockServer::MTCAPTCHA_TOKEN, $result['token']);
     }
+
+    // -- GeeTest v4 ---------------------------------------------------------
+
+    private const GT4_CAPTCHA_ID = '54088bb07d2df3c46b79f80300b0abbe';
+    private const GT4_PAGE = 'https://gt4.geetest.com/';
+
+    public function testGeetestV4(): void
+    {
+        $result = $this->makeSolver()->geetestV4(self::GT4_CAPTCHA_ID, self::GT4_PAGE);
+
+        $this->assertNotEmpty($result['captchaId']);
+        // The mock writes the inner quotes as \u0022, as the app does; the
+        // JSON parser undoes that, so code is the plain JSON string.
+        $this->assertSame(MockServer::GEETEST_V4_SOLUTION_JSON, $result['code']);
+        foreach (json_decode(MockServer::GEETEST_V4_SOLUTION_JSON, true) as $field => $value) {
+            $this->assertSame($value, $result[$field], $field);
+        }
+        $this->assertArrayNotHasKey('isOffline', $result);
+
+        $sent = $this->lastSubmit();
+        $this->assertSame('geetest_v4', $sent['method']);
+        $this->assertSame(self::GT4_CAPTCHA_ID, $sent['captcha_id']);
+        $this->assertSame(self::GT4_PAGE, $sent['pageurl']);
+    }
+
+    public function testGeetestV4WithEveryOption(): void
+    {
+        $result = $this->makeSolver()->geetestV4('', '', [
+            'captchaId' => ' ' . self::GT4_CAPTCHA_ID . ' ',
+            'pageurl' => self::GT4_PAGE,
+            'riskType' => 'slide',
+            'proxy' => ['type' => 'SOCKS5H', 'uri' => 'login:p%40ss@203.0.113.7:1080'],
+        ]);
+
+        $this->assertSame(json_decode(MockServer::GEETEST_V4_SOLUTION_JSON, true)['lot_number'], $result['lot_number']);
+
+        $sent = $this->lastSubmit();
+        $this->assertSame(self::GT4_CAPTCHA_ID, $sent['captcha_id']);
+        $this->assertSame('slide', $sent['risk_type']);
+        $this->assertSame('login:p%40ss@203.0.113.7:1080', $sent['proxy']);
+        $this->assertSame('SOCKS5H', $sent['proxytype']);
+    }
+
+    public function testGeetestV4MissingCaptchaIdIsRefusedLocally(): void
+    {
+        $this->expectException(ValidationException::class);
+
+        $this->makeSolver()->geetestV4('', self::GT4_PAGE);
+    }
+
+    public function testGeetestV4V3ParamsAreRefusedLocally(): void
+    {
+        $this->expectException(ValidationException::class);
+
+        $this->makeSolver()->geetestV4(self::GT4_CAPTCHA_ID, self::GT4_PAGE, [
+            'gt' => '81388ea1fc187e0c335c0a8907ff2625',
+        ]);
+    }
+
+    public function testAsyncGeetestV4(): void
+    {
+        $solver = new AsyncCapSkip([
+            'apiKey' => 'capskip',
+            'host' => self::$server->host,
+            'port' => self::$server->port,
+            'pollingInterval' => 1,
+        ]);
+
+        $result = $solver->geetestV4(self::GT4_CAPTCHA_ID, self::GT4_PAGE, ['risk_type' => 'icon']);
+
+        $this->assertSame(MockServer::GEETEST_V4_SOLUTION_JSON, $result['code']);
+        $this->assertSame(json_decode(MockServer::GEETEST_V4_SOLUTION_JSON, true)['captcha_output'], $result['captcha_output']);
+    }
+
+    // -- Yandex SmartCaptcha ------------------------------------------------
+
+    private const YANDEX_SITEKEY = 'ysc1_DAo8nFPdNCMHkAwYxIUJFxW5IIJd99BBfeeeee';
+    private const YANDEX_PAGE = 'https://smartcaptcha.yandexcloud.net/demo';
+
+    public function testYandexSmart(): void
+    {
+        $result = $this->makeSolver()->yandexSmart(self::YANDEX_SITEKEY, self::YANDEX_PAGE);
+
+        $this->assertNotEmpty($result['captchaId']);
+        $this->assertSame(MockServer::YANDEX_TOKEN, $result['code']);
+        $this->assertSame(MockServer::YANDEX_TOKEN, $result['token']);
+
+        $sent = $this->lastSubmit();
+        $this->assertSame('yandex', $sent['method']);
+        $this->assertSame(self::YANDEX_SITEKEY, $sent['sitekey']);
+        $this->assertSame(self::YANDEX_PAGE, $sent['pageurl']);
+    }
+
+    public function testYandexSmartWithEveryOption(): void
+    {
+        $result = $this->makeSolver()->yandexSmart(' ' . self::YANDEX_SITEKEY . ' ', self::YANDEX_PAGE, [
+            'userAgent' => 'Mozilla/5.0 (caller)',
+            'proxy' => ['type' => 'HTTPS', 'uri' => 'login:password@203.0.113.7:3128'],
+        ]);
+
+        $this->assertSame(MockServer::YANDEX_TOKEN, $result['token']);
+
+        $sent = $this->lastSubmit();
+        $this->assertSame(self::YANDEX_SITEKEY, $sent['sitekey']);
+        $this->assertSame('Mozilla/5.0 (caller)', $sent['useragent']);
+        $this->assertSame('login:password@203.0.113.7:3128', $sent['proxy']);
+        $this->assertSame('HTTPS', $sent['proxytype']);
+    }
+
+    public function testYandexSmartBadSitekeyIsRefusedLocally(): void
+    {
+        $this->expectException(ValidationException::class);
+
+        $this->makeSolver()->yandexSmart('too-short', self::YANDEX_PAGE);
+    }
+
+    public function testYandexSmartBadPageurlIsRefusedLocally(): void
+    {
+        $this->expectException(ValidationException::class);
+
+        $this->makeSolver()->yandexSmart(self::YANDEX_SITEKEY, 'smartcaptcha.yandexcloud.net/demo');
+    }
+
+    public function testYandexSmartSocks4IsRefusedLocally(): void
+    {
+        $this->expectException(ValidationException::class);
+
+        $this->makeSolver()->yandexSmart(self::YANDEX_SITEKEY, self::YANDEX_PAGE, [
+            'proxy' => ['type' => 'SOCKS4', 'uri' => '203.0.113.7:1080'],
+        ]);
+    }
+
+    public function testAsyncYandexSmart(): void
+    {
+        $solver = new AsyncCapSkip([
+            'apiKey' => 'capskip',
+            'host' => self::$server->host,
+            'port' => self::$server->port,
+            'pollingInterval' => 1,
+        ]);
+
+        $result = $solver->yandexSmart(self::YANDEX_SITEKEY, self::YANDEX_PAGE);
+
+        $this->assertSame(MockServer::YANDEX_TOKEN, $result['code']);
+        $this->assertSame(MockServer::YANDEX_TOKEN, $result['token']);
+    }
 }

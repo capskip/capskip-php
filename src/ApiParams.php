@@ -37,6 +37,12 @@ final class ApiParams
     ];
 
     /** @var array<int, string> */
+    public const GEETEST_V4_SUBMIT = [
+        'method', 'captcha_id', 'pageurl', 'risk_type', 'json',
+        'proxy', 'proxytype',
+    ];
+
+    /** @var array<int, string> */
     public const ALTCHA_SUBMIT = [
         'method', 'pageurl', 'challenge_url', 'challenge_json', 'json',
         'proxy', 'proxytype',
@@ -98,6 +104,20 @@ final class ApiParams
      * ERROR_BAD_PARAMETERS.
      */
     private const MTCAPTCHA_SITEKEY = '~^MTPublic-[A-Za-z0-9_-]{1,55}$~D';
+
+    /** @var array<int, string> */
+    public const YANDEX_SUBMIT = [
+        'method', 'sitekey', 'pageurl', 'useragent', 'json',
+        'proxy', 'proxytype',
+    ];
+
+    /**
+     * The server's sitekey test for Yandex SmartCaptcha: 16 to 120 letters,
+     * digits, '_' or '-'. Client keys usually start with ysc1_, but older ones
+     * do not, so the prefix is not required. Anything else is answered
+     * ERROR_BAD_PARAMETERS.
+     */
+    private const YANDEX_SITEKEY = '~^[A-Za-z0-9_-]{16,120}$~D';
 
     /** @var array<int, string> */
     public const DATADOME_SUBMIT = [
@@ -192,6 +212,11 @@ final class ApiParams
         // callers arrive with captchaUrl.
         'captchaUrl' => 'captcha_url',
         'captchaURL' => 'captcha_url',
+        // GeeTest v4: the API documents captcha_id and riskType, and the server
+        // reads captchaId and risk_type too. The SDK sends captcha_id and
+        // risk_type, the spellings 2Captcha's own SDKs send.
+        'captchaId' => 'captcha_id',
+        'riskType' => 'risk_type',
     ];
 
     /**
@@ -910,6 +935,140 @@ final class ApiParams
     }
 
     /**
+     * Refuse a page URL that is missing or not an absolute http(s) address with
+     * a host, as the server does with ERROR_PAGEURL.
+     *
+     * @param array<string, mixed> $params
+     */
+    private static function requireWebUrl(array $params, string $name): void
+    {
+        $rawPageurl = $params['pageurl'] ?? null;
+        $pageurl = is_scalar($rawPageurl) ? trim((string) $rawPageurl) : '';
+        if ($pageurl === '') {
+            throw new ValidationException("'pageurl' is required for {$name}.");
+        }
+        $page = parse_url($pageurl);
+        if (!is_array($page)
+            || !in_array(strtolower((string) ($page['scheme'] ?? '')), ['http', 'https'], true)
+            || (string) ($page['host'] ?? '') === ''
+        ) {
+            throw new ValidationException(
+                "'pageurl' must be an absolute http or https URL for {$name}, got '{$pageurl}'."
+            );
+        }
+    }
+
+    /**
+     * Drop unset and empty optionals, and trim `captcha_id` and `risk_type`.
+     * One the trim leaves empty is dropped too, so a blank `captcha_id` is
+     * refused as missing.
+     *
+     * @param array<string, mixed> $params
+     *
+     * @return array<string, mixed>
+     */
+    public static function normalizeGeetestV4Submit(array $params): array
+    {
+        $params = array_filter(
+            self::dropUnset($params),
+            static fn ($value) => $value !== ''
+        );
+
+        foreach (['captcha_id', 'risk_type'] as $key) {
+            if (isset($params[$key]) && is_string($params[$key])) {
+                $params[$key] = trim($params[$key]);
+                if ($params[$key] === '') {
+                    unset($params[$key]);
+                }
+            }
+        }
+
+        return $params;
+    }
+
+    /**
+     * @param array<string, mixed> $params
+     */
+    public static function validateGeetestV4Submit(array $params): void
+    {
+        // captcha_id is static per site and is all v4 needs besides the page:
+        // there is no per-request challenge as in v3. Without it the server
+        // answers ERROR_BAD_PARAMETERS, and without a full pageurl ERROR_PAGEURL.
+        $captchaId = $params['captcha_id'] ?? null;
+        if ($captchaId === null || $captchaId === '') {
+            throw new ValidationException("'captcha_id' is required for GeeTest v4.");
+        }
+        if (!is_string($captchaId)) {
+            throw new ValidationException("'captcha_id' must be a string for GeeTest v4.");
+        }
+
+        self::requireWebUrl($params, 'GeeTest v4');
+
+        // Free text: GeeTest adds challenge types, so the SDK does not list them.
+        if (array_key_exists('risk_type', $params) && !is_string($params['risk_type'])) {
+            throw new ValidationException("'risk_type' must be a string for GeeTest v4.");
+        }
+
+        $unknown = self::unknownKeys($params, self::GEETEST_V4_SUBMIT);
+        if (!empty($unknown)) {
+            throw new ValidationException(
+                'Unsupported parameters for GeeTest v4: ' . self::reprList($unknown) . '.'
+            );
+        }
+    }
+
+    /**
+     * Drop unset and empty optionals and trim the sitekey.
+     *
+     * @param array<string, mixed> $params
+     *
+     * @return array<string, mixed>
+     */
+    public static function normalizeYandexSubmit(array $params): array
+    {
+        $params = array_filter(
+            self::dropUnset($params),
+            static fn ($value) => $value !== ''
+        );
+
+        if (isset($params['sitekey']) && is_string($params['sitekey'])) {
+            $params['sitekey'] = trim($params['sitekey']);
+        }
+
+        return $params;
+    }
+
+    /**
+     * @param array<string, mixed> $params
+     */
+    public static function validateYandexSubmit(array $params): void
+    {
+        // The server answers ERROR_BAD_PARAMETERS for a missing or malformed
+        // sitekey and ERROR_PAGEURL for a page URL that is missing or not
+        // http(s). Fail locally so neither costs a round-trip.
+        $sitekey = $params['sitekey'] ?? null;
+        if ($sitekey === null || $sitekey === '') {
+            throw new ValidationException("'sitekey' is required for Yandex SmartCaptcha.");
+        }
+        if (!is_string($sitekey) || preg_match(self::YANDEX_SITEKEY, $sitekey) !== 1) {
+            $shown = is_scalar($sitekey) ? var_export($sitekey, true) : gettype($sitekey);
+            throw new ValidationException(
+                "{$shown} is not a Yandex SmartCaptcha sitekey. It is 16 to 120 "
+                . "letters, digits, '_' or '-', usually starting with ysc1_."
+            );
+        }
+
+        self::requireWebUrl($params, 'Yandex SmartCaptcha');
+
+        $unknown = self::unknownKeys($params, self::YANDEX_SUBMIT);
+        if (!empty($unknown)) {
+            throw new ValidationException(
+                'Unsupported parameters for Yandex SmartCaptcha: ' . self::reprList($unknown) . '.'
+            );
+        }
+    }
+
+    /**
      * Apply aliases + proxy normalization, then validate for the captcha type.
      *
      * @param array<string, mixed> $params
@@ -963,6 +1122,12 @@ final class ApiParams
         } elseif ($captchaType === 'mtcaptcha') {
             $params = self::normalizeMtCaptchaSubmit($params);
             self::validateMtCaptchaSubmit($params);
+        } elseif ($captchaType === 'geetest_v4') {
+            $params = self::normalizeGeetestV4Submit($params);
+            self::validateGeetestV4Submit($params);
+        } elseif ($captchaType === 'yandex') {
+            $params = self::normalizeYandexSubmit($params);
+            self::validateYandexSubmit($params);
         }
 
         // Skipped for 'normal', which rejects proxy outright with a clearer message.
